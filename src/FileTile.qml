@@ -166,18 +166,37 @@ Item {
     Component {
         id: folderArt
 
-        Shape {
+        Item {
+            id: card
             width: 128
             height: 92
-            preferredRendererType: Shape.CurveRenderer
-            ShapePath {
-                fillColor: tile.current || folderDrop.containsDrag ? Qt.tint(theme.lighterBackground, Qt.alpha(theme.accent, 0.3))
-                    : hover.hovered ? Qt.tint(theme.lighterBackground, Qt.alpha(theme.foreground, 0.06))
-                    : theme.lighterBackground
-                strokeColor: tile.current || folderDrop.containsDrag ? theme.accent : "transparent"
-                strokeWidth: folderDrop.containsDrag ? 2.5 : 1.5
-                joinStyle: tile.iconRadius > 0 ? ShapePath.RoundJoin : ShapePath.MiterJoin
-                PathSvg { path: tile.folderPath(tile.iconRadius) }
+            readonly property color fill: tile.current || folderDrop.containsDrag ? Qt.tint(theme.lighterBackground, Qt.alpha(theme.accent, 0.3))
+                : hover.hovered ? Qt.tint(theme.lighterBackground, Qt.alpha(theme.foreground, 0.06))
+                : theme.lighterBackground
+            readonly property color line: tile.current || folderDrop.containsDrag ? theme.accent : "transparent"
+            readonly property real lineWidth: folderDrop.containsDrag ? 2.5 : 1.5
+            // As in Glyph: Qt's software renderer wouldn't clip the shape
+            // to the grid it scrolls in, so there it's a picture.
+            readonly property bool pictured: GraphicsInfo.api === GraphicsInfo.Software
+            Image {
+                anchors.fill: parent
+                visible: card.pictured
+                sourceSize: Qt.size(Math.ceil(width * tile.zoom * Screen.devicePixelRatio), Math.ceil(height * tile.zoom * Screen.devicePixelRatio))
+                source: !card.pictured ? ""
+                      : "image://shape/128/92/" + card.lineWidth + "/" + (tile.iconRadius > 0 ? 1 : 0) + "/" + String(card.fill).slice(1)
+                        + "/" + String(card.line).slice(1) + "/" + encodeURIComponent(tile.folderPath(tile.iconRadius))
+            }
+            Shape {
+                anchors.fill: parent
+                visible: !card.pictured
+                preferredRendererType: Shape.CurveRenderer
+                ShapePath {
+                    fillColor: card.fill
+                    strokeColor: card.line
+                    strokeWidth: card.lineWidth
+                    joinStyle: tile.iconRadius > 0 ? ShapePath.RoundJoin : ShapePath.MiterJoin
+                    PathSvg { path: card.pictured ? "" : tile.folderPath(tile.iconRadius) }
+                }
             }
         }
     }

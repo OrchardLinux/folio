@@ -30,6 +30,7 @@
 #include "foldermodel.h"
 #include "places.h"
 #include "previewer.h"
+#include "shapes.h"
 #include "theme.h"
 #include "thumbnails.h"
 #include "translator.h"
@@ -2236,6 +2237,7 @@ private slots:
         engine.rootContext()->setContextProperty("translator", QVariantMap{{"language", "en"}});
         Thumbnails thumbnails(home.filePath("cache"), {home.filePath("none")});
         engine.addImageProvider("thumb", new ThumbnailProvider(&thumbnails));
+        engine.addImageProvider("shape", new ShapeProvider);
         QQmlComponent component(&engine);
         component.setData("import QtQuick\n"
                           "Window {\n"
@@ -2498,6 +2500,37 @@ private slots:
         Translator translator(dir.path() + "/language", dir.path());
         QCOMPARE(QLocale().toString(12345), QString("12345"));
         QCOMPARE(QLocale().toString(1.5, 'f', 1), QString("1,5"));
+    }
+
+    void shapesDrawFoliosPathsAsPictures()
+    {
+        // The path data the icons and the folder card are written in:
+        // lines, absolute and relative, a letter left out when it repeats,
+        // curves, and arcs.
+        QCOMPARE(ShapeProvider::parse("M4 4h6v8H4z").boundingRect(), QRectF(4, 4, 6, 8));
+        QCOMPARE(ShapeProvider::parse("M15 6l-6 6 6 6").boundingRect(), QRectF(9, 6, 6, 12));
+        QCOMPARE(ShapeProvider::parse("M2 2Q10 2 10 10").currentPosition(), QPointF(10, 10));
+        // A circle as Glyph.qml writes one: two half turns.
+        const QRectF circle = ShapeProvider::parse("M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0").boundingRect();
+        QVERIFY(qAbs(circle.left() - 3) < 0.01 && qAbs(circle.top() - 3) < 0.01);
+        QVERIFY(qAbs(circle.width() - 18) < 0.01 && qAbs(circle.height() - 18) < 0.01);
+        // What isn't path data ends the path there, drawing what came before.
+        QCOMPARE(ShapeProvider::parse("M1 1h4 nonsense").boundingRect(), QRectF(1, 1, 4, 0));
+
+        // The picture comes at the size asked for, the drawing scaled to it,
+        // with nothing outside the line: at twice the size the same square.
+        ShapeProvider provider;
+        QSize size;
+        const QImage picture = provider.requestImage("24/24/2/0/none/ff0000/" + QUrl::toPercentEncoding("M6 6h12v12H6z"),
+                                                     &size, QSize(48, 48));
+        QCOMPARE(size, QSize(48, 48));
+        QCOMPARE(picture.pixelColor(12, 24), QColor(255, 0, 0));
+        QCOMPARE(picture.pixelColor(36, 12), QColor(255, 0, 0));
+        QCOMPARE(picture.pixelColor(24, 24).alpha(), 0);
+        QCOMPARE(picture.pixelColor(3, 3).alpha(), 0);
+        const QImage filled = provider.requestImage("24/24/0/0/00ff00/none/" + QUrl::toPercentEncoding("M6 6h12v12H6z"),
+                                                    &size, QSize(24, 24));
+        QCOMPARE(filled.pixelColor(12, 12), QColor(0, 255, 0));
     }
 
 private:

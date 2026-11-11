@@ -89,8 +89,24 @@ Item {
         }
     }
 
+    // Qt's software renderer paints a shape past the edge of a list that
+    // clips it, so a row scrolling out drew its icon over the bar above.
+    // There the same drawing comes as a picture (see shapes.h), which is
+    // clipped as it should be.
+    readonly property bool pictured: GraphicsInfo.api === GraphicsInfo.Software
+    Image {
+        anchors.fill: parent
+        visible: glyph.pictured
+        sourceSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio), Math.ceil(height * Screen.devicePixelRatio))
+        source: !glyph.pictured || glyph.size <= 0 ? ""
+              : "image://shape/24/24/" + (glyph.filled ? 0 : glyph.stroke * 24 / glyph.size) + "/" + (theme.radius > 0 ? 1 : 0)
+                + "/" + (glyph.filled ? String(glyph.color).slice(1) : "none")
+                + "/" + (glyph.filled ? "none" : String(glyph.color).slice(1)) + "/" + encodeURIComponent(glyph.path)
+    }
+
     Shape {
         anchors.fill: parent
+        visible: !glyph.pictured
         preferredRendererType: Shape.CurveRenderer
 
         ShapePath {
@@ -100,7 +116,7 @@ Item {
             capStyle: theme.radius > 0 ? ShapePath.RoundCap : ShapePath.SquareCap
             joinStyle: theme.radius > 0 ? ShapePath.RoundJoin : ShapePath.MiterJoin
             scale: Qt.size(glyph.size / 24, glyph.size / 24)
-            PathSvg { path: glyph.path }
+            PathSvg { path: glyph.pictured ? "" : glyph.path }
         }
     }
 }
