@@ -17,6 +17,7 @@
 #include "places.h"
 #include "plugins.h"
 #include "previewer.h"
+#include "shapes.h"
 #include "theme.h"
 #include "thumbnails.h"
 #include "translator.h"
@@ -104,6 +105,7 @@ static int preview(QGuiApplication &app) {
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
     QObject::connect(&translator, &Translator::changed, &previewer, &Previewer::relist);
     engine.addImageProvider("thumb", new ThumbnailProvider(&thumbnails));
+    engine.addImageProvider("shape", new ShapeProvider);
     engine.rootContext()->setContextProperty("translator", &translator);
     engine.rootContext()->setContextProperty("theme", &theme);
     engine.rootContext()->setContextProperty("previewer", &previewer);
@@ -142,6 +144,7 @@ int main(int argc, char *argv[]) {
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
     engine.addImageProvider("thumb", new ThumbnailProvider(&thumbnails));
     engine.addImageProvider("plugin-icon", new PluginIconProvider);
+    engine.addImageProvider("shape", new ShapeProvider);
     // Creatable too: the column view lists each folder on the way here.
     qmlRegisterType<FolderModel>("Folio", 1, 0, "FolderModel");
     engine.rootContext()->setContextProperty("translator", &translator);
