@@ -46,6 +46,8 @@ GridView {
     signal contextMenu(var item, string folder, point at)
     TapHandler {
         acceptedButtons: Qt.RightButton
+        // A finger has no right button, though its tap would pass for one.
+        acceptedDevices: PointerDevice.AllDevices & ~PointerDevice.TouchScreen
         onTapped: (point) => grid.contextMenu(selecting.menuAt(point), backend.path, point.scenePosition)
     }
 

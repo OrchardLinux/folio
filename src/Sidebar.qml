@@ -408,6 +408,8 @@ Rectangle {
                     }
                     TapHandler {
                         acceptedButtons: Qt.RightButton
+                        // A finger has no right button, though its tap would pass for one.
+                        acceptedDevices: PointerDevice.AllDevices & ~PointerDevice.TouchScreen
                         onTapped: driveMenu.show(driveRow.modelData, null)
                     }
                     IconButton {
