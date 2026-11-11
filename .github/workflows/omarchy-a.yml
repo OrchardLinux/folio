@@ -1,0 +1,82 @@
+name: Omarchy A package
+
+# Omarchy A (OrchardLinux/omarchy-a) ships Folio with touch mode ahead of
+# upstream. Every push to the omarchy-a branch builds its arm64 package and
+# runs the tests; a tag aX.Y.Z-N also attests the package and drafts a
+# release with it, which Omarchy A pins by URL and checksum.
+
+on:
+  push:
+    branches: [omarchy-a]
+    tags: ['a*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  package:
+    name: Package (arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that the tag names this version
+        if: github.ref_type == 'tag'
+        run: |
+          pkgver=$(sed -n 's/^pkgver=//p' pkgbuild/PKGBUILD)
+          release=$(cat pkgbuild/omarchy-a/release)
+          echo "package $pkgver-$release, tag $GITHUB_REF_NAME"
+          [ "$GITHUB_REF_NAME" = "a$pkgver-$release" ] || { echo "::error::tag $GITHUB_REF_NAME does not match a$pkgver-$release"; exit 1; }
+
+      - name: Build the package and run the tests
+        run: |
+          docker run --rm -v "$PWD:/src" -e SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            "$(cat pkgbuild/omarchy-a/image)" /src/pkgbuild/omarchy-a/build
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: folio-package
+          path: dist/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Attest and draft the release
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write      # create the draft release
+      id-token: write      # sign the attestation as this workflow
+      attestations: write  # store it
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: folio-package
+          path: dist
+
+      - name: Check the package against its checksum
+        run: cd dist && sha256sum -c SHA256SUMS
+
+      - name: Attest the build
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag \
+            --title "Files for Omarchy A ${GITHUB_REF_NAME#a}" \
+            --notes "Folio with touch mode, packaged for Omarchy A (arm64)."
