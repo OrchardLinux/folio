@@ -15,13 +15,25 @@ ListView {
     // Where the keyboard's menu (Alt+Return) opens: beside the cursor's item.
     function menuAnchor() { return currentItem }
 
-    Selecting { id: selecting; view: list }
+    // Touch mode and its select mode, set by the pane. A finger's long
+    // press on an item takes hold of it: the pane shows its menu, and
+    // moving on from there drags it.
+    property bool touchMode: false
+    property bool picking: false
+    signal held(var item, var from, string folder)
+    signal fileTouched()
+    property bool pointing: true
+    readonly property var scroller: list
+    readonly property int rowHeight: touchMode ? 48 : 32
+
+    Selecting { id: selecting; view: list; picking: list.picking; onFileTouched: list.fileTouched() }
     onCurrentIndexChanged: selecting.cursorMoved()
     Keys.onPressed: (event) => selecting.extendBy(event, event.key === Qt.Key_Up ? -1 : event.key === Qt.Key_Down ? 1 : 0)
 
     Band {
         view: list
-        rectOf: (i) => Qt.rect(0, i * 32, list.width, 32)
+        touchMode: list.touchMode
+        rectOf: (i) => Qt.rect(0, i * list.rowHeight, list.width, list.rowHeight)
     }
 
     // → goes into the selected folder and ← back up, as in the columns;
@@ -43,6 +55,28 @@ ListView {
         onTapped: (point) => list.contextMenu(selecting.menuAt(point), backend.path, point.scenePosition)
     }
 
+    // Touch mode: a long press on empty space is the folder's menu, and a
+    // tap there lets go of the selection, as a click does. On an item, the
+    // item's own handlers answer.
+    TapHandler {
+        id: fingerTap
+        acceptedDevices: PointerDevice.TouchScreen
+        enabled: list.touchMode
+        // On an item where the item itself says so: a tile is only its
+        // picture and its name.
+        function onItem() {
+            const item = list.itemAtIndex(list.indexAt(point.position.x + list.contentX, point.position.y + list.contentY))
+            return !!item && item.contains(item.mapFromItem(list, point.position))
+        }
+        onTapped: {
+            if (!onItem() && !list.picking) {
+                backend.folder.clearSelection()
+                list.letGo()
+            }
+        }
+        onLongPressed: if (!onItem()) list.contextMenu(null, backend.path, point.scenePosition)
+    }
+
     clip: true
     focus: true
     keyNavigationEnabled: true
@@ -59,8 +93,19 @@ ListView {
         width: list.width
         detailed: true
         current: selected
+        touchMode: list.touchMode
+        pointing: list.pointing
+        picking: list.picking
+        stacked: list.touchMode && list.width < 600 && backend.folder.query.length > 0
         onClicked: (modifiers) => { selecting.click(index, modifiers); list.forceActiveFocus() }
         onActivated: backend.open(path)
+        onTouched: { list.forceActiveFocus(); selecting.touch(index) }
+        onHeld: list.held(selecting.hold(index), this, backend.path)
+        onSweepStarted: selecting.sweepFrom(index)
+        onSwept: (at) => {
+            const p = list.mapFromItem(null, at.x, at.y)
+            selecting.sweepTo(list.indexAt(p.x + list.contentX, p.y + list.contentY))
+        }
     }
 
     Text {

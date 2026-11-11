@@ -10,6 +10,9 @@ MouseArea {
     // The GridView or ListView, and the area each item takes in it.
     required property var view
     required property var rectOf
+    // In touch mode a finger pressed on empty space scrolls the view; only
+    // the mouse draws a band.
+    property bool touchMode: false
 
     property point start
     property point end
@@ -26,8 +29,13 @@ MouseArea {
     }
 
     onPressed: (mouse) => {
+        if (touchMode && mouse.source !== Qt.MouseEventNotSynthesized) {
+            mouse.accepted = false
+            return
+        }
         // Presses on an item belong to the item (select, drag it away).
-        if (view.indexAt(mouse.x, mouse.y) >= 0) {
+        const item = view.itemAtIndex(view.indexAt(mouse.x, mouse.y))
+        if (item && item.contains(item.mapFromItem(band, mouse.x, mouse.y))) {
             mouse.accepted = false
             return
         }

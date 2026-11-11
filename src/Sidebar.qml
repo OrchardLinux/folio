@@ -24,6 +24,17 @@ Rectangle {
     property int cursor: 0
     // The pane the sidebar acts on: the one used last.
     property var target: backend
+    // A place was opened by a click or a tap. Where the sidebar lies over
+    // the files (touch mode's medium and narrow layouts), it then goes.
+    signal picked()
+    function go(path) {
+        sidebar.target.navigate(path)
+        picked()
+    }
+    // The whole window on a phone, as the first screen: rows that say they
+    // lead somewhere, and no ? for keys that aren't there.
+    property bool full: false
+    property alias flick: flick
 
     // Something is being dragged over the sidebar (anywhere on it, rows
     // included), so the pin box shows.
@@ -117,7 +128,7 @@ Rectangle {
 
     DriveMenu {
         id: driveMenu
-        onOpenRequested: (path) => { sidebar.target.navigate(path); sidebar.finished() }
+        onOpenRequested: (path) => { sidebar.target.navigate(path); sidebar.finished(); sidebar.picked() }
         onFormatRequested: (disk) => sidebar.formatRequested(disk)
     }
 
@@ -172,37 +183,41 @@ Rectangle {
         // What a plugin says about this folder: a status, and an icon of
         // its own.
         readonly property var mark: dropPath.length > 0 ? plugins.marks[dropPath] : undefined
+        // What a long press offers (touch mode), in place of the button
+        // that hovering shows: {text, run}.
+        property var held: null
+        onPressAndHold: if (touch.enabled && held) placeMenu.show(row, held)
 
         Layout.fillWidth: true
-        implicitHeight: detail.length > 0 ? 44 : 34
+        implicitHeight: touch.enabled || detail.length > 0 ? 44 : 34
         leftPadding: mirrored ? endPadding : 14
         rightPadding: mirrored ? 14 : endPadding
-        hoverEnabled: true
+        // In touch mode only the mouse hovers: a finger would leave the button
+        // it tapped looking hovered. Its own hover can't tell the two apart,
+        // so it's off, and a handler's hover counts while the mouse is in use.
+        hoverEnabled: !touch.enabled
+        HoverHandler { id: pointer; enabled: touch.enabled }
+        readonly property bool pointed: touch.enabled ? pointer.hovered && touch.pointing : row.hovered
         focusPolicy: Qt.NoFocus
         Accessible.name: text
 
         background: Rectangle {
             radius: Math.min(4, theme.radius)
             color: row.active || row.dropHover ? Qt.alpha(theme.accent, 0.16)
-                 : row.hovered && row.enabled ? Qt.alpha(theme.foreground, 0.06) : "transparent"
+                 : touch.enabled && row.down ? Qt.alpha(theme.foreground, 0.10)
+                 : row.pointed && row.enabled ? Qt.alpha(theme.foreground, 0.06) : "transparent"
             border.width: row.dropHover ? 2 : row.keyed ? 1 : 0
             border.color: theme.accent
         }
 
-        DropArea {
+        FileDrop {
             id: rowDrop
             anchors.fill: parent
             enabled: row.dropPath.length > 0 || row.dropTrashes
-            keys: ["text/uri-list"]
-            onEntered: (drag) => { drag.accepted = row.dropTrashes ? drag.hasUrls : fileOps.canDrop(drag.urls, row.dropPath) }
-            onDropped: (drop) => {
-                if (row.dropTrashes) {
-                    fileOps.trash(fileOps.localPaths(drop.urls))
-                } else {
-                    fileOps.dropInto(drop.urls, row.dropPath)
-                }
-                drop.accept(Qt.MoveAction)
-            }
+            folder: row.dropPath
+            trashes: row.dropTrashes
+            name: row.text
+            spring: row.dropPath.length > 0 ? () => sidebar.go(row.dropPath) : null
         }
         contentItem: RowLayout {
             spacing: 14
@@ -243,6 +258,26 @@ Rectangle {
                      : row.mark.tone === "warning" ? theme.yellow : theme.secondaryForeground
                 font.pixelSize: 11
             }
+            Glyph {
+                visible: sidebar.full
+                name: row.mirrored ? "back" : "forward"
+                size: 12
+                color: theme.secondaryForeground
+            }
+        }
+    }
+
+    // Touch mode: what a long press on a row offers.
+    FolioMenu {
+        id: placeMenu
+        property var offer: null
+        function show(row, held) {
+            offer = held
+            popup(row, Math.min(row.width / 2, 120), row.height / 2)
+        }
+        FolioMenuItem {
+            text: placeMenu.offer ? placeMenu.offer.text : ""
+            onTriggered: placeMenu.offer.run()
         }
     }
 
@@ -279,10 +314,10 @@ Rectangle {
                 Layout.topMargin: 0
                 text: qsTr("Home")
                 color: sidebar.target.path === places.home ? theme.accent
-                     : homeHover.hovered ? theme.foreground : theme.secondaryForeground
+                     : homeHover.hovered && (!touch.enabled || touch.pointing) ? theme.foreground : theme.secondaryForeground
                 Accessible.role: Accessible.Button
                 HoverHandler { id: homeHover; cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: sidebar.target.navigate(places.home) }
+                TapHandler { onTapped: sidebar.go(places.home) }
             }
             Repeater {
                 model: places.places
@@ -296,7 +331,7 @@ Rectangle {
                     text: modelData.name
                     glyph: modelData.icon
                     active: sidebar.activePath === modelData.path
-                    onClicked: sidebar.target.navigate(modelData.path)
+                    onClicked: sidebar.go(modelData.path)
                 }
             }
 
@@ -317,10 +352,11 @@ Rectangle {
                     text: modelData.name
                     glyph: modelData.icon
                     active: sidebar.activePath === modelData.path
-                    onClicked: sidebar.target.navigate(modelData.path)
+                    onClicked: sidebar.go(modelData.path)
                     // The name ends short of the unpin button while it shows:
                     // hovered, or on the keyboard's row, where Delete does
                     // the same.
+                    held: ({ text: qsTr("Unpin"), run: () => places.unpin(pinRow.modelData.path) })
                     endPadding: unpin.visible ? unpin.implicitWidth + 6 : 14
                     IconButton {
                         id: unpin
@@ -328,7 +364,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         implicitWidth: 28
                         implicitHeight: 28
-                        visible: pinRow.hovered || hovered || pinRow.keyed
+                        visible: pinRow.keyed || !touch.enabled && (pinRow.hovered || hovered)
                         glyph: "close"
                         text: qsTr("Unpin")
                         onClicked: places.unpin(pinRow.modelData.path)
@@ -353,8 +389,12 @@ Rectangle {
                     id: pinDrop
                     anchors.fill: parent
                     keys: ["text/uri-list"]
+                    // What a finger's drag says a drop here would do; its
+                    // files are with its source.
+                    readonly property string label: qsTr("Pin")
                     onDropped: (drop) => {
-                        for (const path of fileOps.localPaths(drop.urls)) {
+                        const urls = drop.source && drop.source.urls !== undefined ? drop.source.urls : drop.urls
+                        for (const path of fileOps.localPaths(urls)) {
                             const problem = places.pin(path)
                             if (problem.length > 0)
                                 sidebar.target.showMessage(problem)
@@ -376,7 +416,7 @@ Rectangle {
                     text: modelData.icon === "trash" ? qsTr("Trash") : qsTr("Recents")
                     glyph: modelData.icon
                     active: sidebar.activePath === modelData.path
-                    onClicked: sidebar.target.navigate(modelData.path)
+                    onClicked: sidebar.go(modelData.path)
                     keyed: sidebar.activeFocus && sidebar.cursor === sidebar.viewsAt + index
                     onKeyedChanged: if (keyed) sidebar.reveal(this)
                 }
@@ -401,7 +441,7 @@ Rectangle {
                     text: modelData.name
                     glyph: eject.visible ? "" : modelData.icon
                     active: sidebar.activePath === modelData.path
-                    onClicked: sidebar.target.navigate(modelData.path)
+                    onClicked: sidebar.go(modelData.path)
                     detail: {
                         translator.language // Re-read when the language (and so its digits) changes.
                         return modelData.free < 0 ? "" : Format.free(modelData.free)
@@ -412,6 +452,8 @@ Rectangle {
                         acceptedDevices: PointerDevice.AllDevices & ~PointerDevice.TouchScreen
                         onTapped: driveMenu.show(driveRow.modelData, null)
                     }
+                    // A finger has no right button: a long press shows the menu.
+                    onPressAndHold: if (touch.enabled) driveMenu.show(driveRow.modelData, driveRow)
                     IconButton {
                         id: eject
                         // Where the drive's own icon is, centered on it.
@@ -420,7 +462,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         implicitWidth: 28
                         implicitHeight: 28
-                        visible: driveRow.modelData.release !== "" && (driveRow.hovered || hovered || driveRow.keyed)
+                        visible: driveRow.modelData.release !== "" && (driveRow.keyed || !touch.enabled && (driveRow.hovered || hovered))
                         glyph: "eject"
                         text: driveRow.modelData.release === "eject" ? qsTr("Eject") : qsTr("Unmount")
                         onClicked: places.eject(driveRow.modelData.path)
@@ -453,7 +495,8 @@ Rectangle {
                             text: modelData.name
                             glyph: modelData.icon
                             active: sidebar.inside(modelData.root)
-                            onClicked: sidebar.target.open(modelData.path)
+                            onClicked: { sidebar.target.open(modelData.path); sidebar.picked() }
+                            held: itemRow.modelData.forgettable ? { text: qsTr("Remove from the sidebar"), run: () => plugins.forget(itemRow.modelData.plugin, itemRow.modelData.id) } : null
                             endPadding: forgetItem.visible ? forgetItem.implicitWidth + 6 : 14
                             IconButton {
                                 id: forgetItem
@@ -461,7 +504,7 @@ Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
                                 implicitWidth: 28
                                 implicitHeight: 28
-                                visible: itemRow.modelData.forgettable && (itemRow.hovered || hovered || itemRow.keyed)
+                                visible: itemRow.modelData.forgettable && (itemRow.keyed || !touch.enabled && (itemRow.hovered || hovered))
                                 glyph: "close"
                                 text: qsTr("Remove from the sidebar")
                                 onClicked: plugins.forget(itemRow.modelData.plugin, itemRow.modelData.id)
@@ -481,7 +524,7 @@ Rectangle {
                             return section.modelData.view ? section.modelData.view.count.toLocaleString(Qt.locale(), "f", 0) : ""
                         }
                         statusColor: theme.secondaryForeground
-                        onClicked: sidebar.target.navigate(section.modelData.view.path)
+                        onClicked: sidebar.go(section.modelData.view.path)
                     }
                 }
             }
@@ -492,6 +535,7 @@ Rectangle {
     // the key that shows them.
     AbstractButton {
         id: help
+        visible: !sidebar.full
         anchors.left: parent.left
         anchors.bottom: parent.bottom
         anchors.leftMargin: 18
@@ -499,7 +543,7 @@ Rectangle {
         implicitWidth: 24
         implicitHeight: 24
         focusPolicy: Qt.NoFocus
-        hoverEnabled: true
+        hoverEnabled: !touch.enabled || touch.pointing
         text: qsTr("Keyboard shortcuts")
         Accessible.name: text
         onClicked: sidebar.helpRequested()

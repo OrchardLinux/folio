@@ -84,6 +84,18 @@ Item {
         case "open": return "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6"
         case "audio": return "M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2"
         case "check": return "M5 12l5 5 9-10"
+        // What touch mode puts on screen for the keys a finger doesn't have.
+        case "up": return "M12 20V5M6 11l6-6 6 6"
+        case "search": return circle(10.5, 10.5, 6.5) + "M15.5 15.5L20 20"
+        case "hidden": return "M2 12Q7 5 12 5Q17 5 22 12Q17 19 12 19Q7 19 2 12Z" + circle(12, 12, 2.5)
+        case "more": return circle(5, 12, 0.6) + circle(12, 12, 0.6) + circle(19, 12, 0.6)
+        case "sidebar": return box(3, 5, 18, 14, r) + "M9 5v14"
+        case "copy": return box(8, 8, 12, 12, r / 2) + "M16 8V4H4v12h4"
+        case "cut": return circle(6, 18, 2.5) + circle(18, 18, 2.5) + "M7.8 16.2L18 4M16.2 16.2L6 4"
+        case "duplicate": return box(8, 8, 12, 12, r / 2) + "M16 8V4H4v12h4M14 11v6M11 14h6"
+        case "compress": return box(6, 3, 12, 18, r / 2) + "M12 3v2M12 7v2M12 11v2M10.5 15h3v3h-3z"
+        case "share": return "M12 15V3M8 7l4-4 4 4M6 11H5v10h14V11h-1"
+        case "paste": return box(6, 5, 12, 16, r / 2) + "M9 5V3h6v2"
         case "close": return "M6 6l12 12M18 6L6 18"
         default: return page()
         }

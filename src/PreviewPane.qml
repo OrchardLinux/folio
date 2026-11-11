@@ -51,7 +51,9 @@ Rectangle {
 
     color: theme.darkBackground
 
-    Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: Qt.alpha(theme.foreground, 0.12) }
+    // The line between it and the files beside it; none as a sheet.
+    property bool edged: true
+    Rectangle { visible: pane.edged; anchors.left: parent.left; width: 1; height: parent.height; color: Qt.alpha(theme.foreground, 0.12) }
 
     ColumnLayout {
         anchors.fill: parent
@@ -240,20 +242,38 @@ Rectangle {
 
         Item { Layout.fillHeight: true }
 
+        // Touch mode: Space as a button, since a tap brings these details
+        // rather than the preview.
+        PlainButton {
+            Layout.fillWidth: true
+            visible: touch.enabled && pane.hasItem && !pane.item.isDir && !pane.pluginItem && !pane.trashed && !pane.noting
+                     && pane.folderPane.paneBackend.canPreview(pane.item.mime || "")
+            text: qsTr("Preview")
+            onClicked: pane.folderPane.paneBackend.togglePreview(pane.item.path)
+        }
         AbstractButton {
             id: openButton
             Layout.fillWidth: true
-            implicitHeight: 40
+            implicitHeight: touch.enabled ? 44 : 40
             focusPolicy: Qt.NoFocus
-            hoverEnabled: true
-            enabled: !pane.noting
+            hoverEnabled: !touch.enabled || touch.pointing
             // Names the app the file opens in: "Open with Plain", read again
             // when Opens with picks another.
             readonly property string app: {
                 opensWith.picked
                 return pane.hasItem && !pane.item.isDir && pane.folderPane ? pane.folderPane.paneFileOps.defaultAppName(pane.item.mime || "") : ""
             }
+            // A file no installed app opens says so here, rather than offer
+            // an Open that would only answer with a message.
+            readonly property bool opens: {
+                opensWith.picked
+                return !pane.hasItem || pane.item.isDir || pane.trashed || pane.noting || pane.pluginItem || !pane.folderPane
+                    || pane.folderPane.paneFileOps.appsFor(pane.item.path).length > 0
+            }
+            enabled: !pane.noting && opens
+            opacity: opens ? 1 : 0.45
             text: pane.trashed || pane.noting ? qsTr("Restore") : pane.hasItem && pane.item.isDir ? qsTr("Open folder")
+                : !opens ? qsTr("No app opens this")
                 //: %1 is the name of the app the file opens in, like "Plain".
                 : app ? qsTr("Open with %1").arg(app) : qsTr("Open")
             Accessible.name: text
@@ -265,7 +285,7 @@ Rectangle {
             contentItem: RowLayout {
                 // A long app name ends in … rather than running past the button.
                 Text { Layout.leftMargin: 14; Layout.fillWidth: true; text: openButton.text; elide: Text.ElideRight; color: theme.accentForeground; font.weight: Font.DemiBold }
-                Text { Layout.rightMargin: 14; text: "⏎"; color: theme.accentForeground }
+                Text { Layout.rightMargin: 14; visible: openButton.opens; text: "⏎"; color: theme.accentForeground }
             }
         }
     }

@@ -23,6 +23,13 @@ class Backend : public QObject {
     // labels (a poll, a language switch) while its view is shown.
     Q_PROPERTY(QString title READ title NOTIFY placeChanged)
     Q_PROPERTY(QVariantList crumbs READ crumbs NOTIFY placeChanged)
+    // Whether there's somewhere to go back or forward to, for the buttons
+    // touch mode puts beside the path.
+    Q_PROPERTY(bool canBack READ canBack NOTIFY pathChanged)
+    Q_PROPERTY(bool canForward READ canForward NOTIFY pathChanged)
+    // Whether there's a folder above this one: not above /, nor above a
+    // place of its own (Recents, the trash, a plugin's view).
+    Q_PROPERTY(bool canGoUp READ canGoUp NOTIFY pathChanged)
     Q_PROPERTY(QString message READ message NOTIFY messageChanged)
     Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged)
     Q_PROPERTY(QString busy READ busy NOTIFY busyChanged)
@@ -48,6 +55,7 @@ public:
     QVariantList crumbs() const;
     bool canBack() const { return m_index > 0; }
     bool canForward() const { return m_index + 1 < m_history.size(); }
+    bool canGoUp() const;
     QString message() const { return m_message; }
     QString notice() const { return m_notice; }
     // Mounting, or else the latest plugin action still running.
@@ -86,6 +94,12 @@ public:
     Q_INVOKABLE QString typedPath() const;
     Q_INVOKABLE bool goTyped(const QString &text);
     Q_INVOKABLE QString completePath(const QString &text) const;
+    // Every folder the last part of a typed path could become, each as the
+    // whole path it would make: what Tab chooses among, as a list to tap.
+    Q_INVOKABLE QStringList completions(const QString &text) const;
+    // Whether the preview has a look of its own at this type, or would only
+    // point to the file's app.
+    Q_INVOKABLE static bool canPreview(const QString &mime);
     // Space: opens the large preview of a file in its own process, or closes
     // it when it's already open.
     Q_INVOKABLE void togglePreview(const QString &path);
@@ -106,6 +120,7 @@ public:
 
     static QString expandTyped(const QString &text, const QString &home, const QString &current);
     static QString complete(const QString &text, const QString &home, const QString &current);
+    static QStringList completions(const QString &text, const QString &home, const QString &current);
     static QString mountLabel(const QString &mountFolder);
     // A server address (sftp://, smb://, ftp://, dav://, davs://) as GIO
     // mounts it, or empty when the text isn't one.

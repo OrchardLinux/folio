@@ -27,6 +27,42 @@ FocusScope {
     // the view of the pane it was split from.
     property string viewMode: host ? host.viewMode : "columns"
     onViewModeChanged: if (host && !closable) host.viewMode = viewMode
+
+    // Touch mode: the window's layout by its width ("wide", "medium" or
+    // "narrow"), and select mode, where a tap adds to the selection. A
+    // phone's width has no room for columns: it shows the list instead, and
+    // the columns again once the window is wider.
+    readonly property bool touchMode: touch.enabled
+    readonly property string form: host && host.form ? host.form : "wide"
+    readonly property string shownView: form === "narrow" && viewMode === "columns" ? "list" : viewMode
+    property bool picking: false
+    onPickingChanged: {
+        backend.folder.clearSelection()
+        if (view.item)
+            view.item.letGo()
+    }
+    // After Copy or Cut, until it's pasted or cancelled: the Paste Here bar.
+    property bool pasteOffered: false
+    readonly property var scroller: view.item ? view.item.scroller : null
+    function closeMenu() { fileMenu.close() }
+    // A folder (or a view of it) arriving with no item to go back to: the
+    // keyboard gets its cursor on the first one, ready for the arrows. A
+    // finger needs none, and a first item lit up would look chosen, so in
+    // touch mode nothing is selected until something is tapped.
+    function arrive(shown, row, keep) {
+        if (touchMode && row < 0) {
+            backend.folder.clearSelection()
+            shown.letGo()
+        } else {
+            shown.select(row, keep === true)
+        }
+    }
+    // A finger down anywhere but on the path or search being typed (or the
+    // completions under it) is done typing, as Escape or a click away is.
+    function touchedAt(at) {
+        if (pathBar.fieldFocused && !pathBar.keeps(at))
+            focusView()
+    }
     // How big the grid's tiles are, in steps (Ctrl+= / Ctrl+- / Ctrl+0, or
     // Ctrl+scroll), shared and remembered the same way as the view.
     property real zoom: host ? host.zoom : 1
@@ -37,7 +73,10 @@ FocusScope {
         zoom = zoomSteps[Math.max(0, Math.min(zoomSteps.length - 1, (at < 0 ? 1 : at) + step))]
     }
     function cycleView() {
-        viewMode = viewMode === "grid" ? "list" : viewMode === "list" ? "columns" : "grid"
+        if (form === "narrow")
+            viewMode = shownView === "grid" ? "list" : "grid"
+        else
+            viewMode = viewMode === "grid" ? "list" : viewMode === "list" ? "columns" : "grid"
     }
 
     // The cursor's item, carried across a switch of view and a re-read of
@@ -155,10 +194,12 @@ FocusScope {
     Shortcut { sequence: "Escape"; enabled: pane.keys && fileOps.busy.length > 0; onActivated: fileOps.cancel() }
     Shortcut {
         sequence: "Escape"
-        enabled: pane.keys && fileOps.busy.length === 0
-                 && (backend.message.length > 0 || backend.folder.selectedCount > 1 || backend.folder.query.length > 0)
+        enabled: pane.keys && (pane.picking || fileOps.busy.length === 0
+                 && (backend.message.length > 0 || backend.folder.selectedCount > 1 || backend.folder.query.length > 0))
         onActivated: {
-            if (backend.message.length > 0)
+            if (pane.picking)
+                pane.picking = false
+            else if (backend.message.length > 0)
                 backend.dismissMessage()
             else if (backend.folder.selectedCount > 1)
                 backend.folder.selectOnly(view.item ? view.item.currentIndex : -1)
@@ -217,12 +258,24 @@ FocusScope {
         target: backend
         function onSelectRequested(name) { if (view.item) view.item.select(backend.folder.indexOf(name), false) }
         function onActivateRequested() { if (pane.host) { pane.host.raise(); pane.host.requestActivate() } }
+        // Select mode ends where it began.
+        function onPathChanged() { pane.picking = false }
     }
 
     Connections {
         target: view.item
         function onContextMenu(item, folder, at) { fileMenu.show(item, folder, null, at) }
         function onCursorLetGo() { pane.cursorLetGo = true }
+        function onFileTouched() { if (pane.host && pane.host.showDetails) pane.host.showDetails() }
+        // A finger holding an item: lifted, with its menu beside it. A
+        // selected item in the folder being shown brings the selection.
+        function onHeld(item, from, folder) {
+            if (!pane.host || !pane.host.lift)
+                return
+            const several = item.selected === true && folder === backend.path && backend.folder.selectedCount > 1
+            pane.host.lift.begin({ pane: pane, delegate: from }, item, several ? backend.folder.selectedPaths() : [item.path])
+            fileMenu.show(item, folder, from, null, true)
+        }
         // The cursor's item is remembered as the cursor moves, and once the
         // folder's loaded has placed it. Not when a re-read leaves the cursor
         // on its row while a new file pushes its item down: loaded then puts
@@ -264,6 +317,15 @@ FocusScope {
         // pane, and the sidebar shows it as it is afterwards.
         function onReleasing(root) { places.leave(root) }
         function onDrivesChanged() { places.refresh() }
+        function onClipboardChanged() { pane.pasteOffered = fileOps.canPaste }
+    }
+
+    // The view stays put while a finger holds one of its items.
+    Binding {
+        target: view.item
+        property: "interactive"
+        value: false
+        when: !!pane.host && !!pane.host.lift && pane.host.lift.busy
     }
 
     Connections {
@@ -286,7 +348,7 @@ FocusScope {
             if (pending)
                 view.item.select(backend.folder.indexOf(pending), false)
             else if (!same)
-                view.item.select(-1, false)
+                pane.arrive(view.item, -1)
             else if (!pane.cursorLetGo)
                 view.item.select(row >= 0 ? row : Math.min(view.item.currentIndex, backend.folder.count - 1), true)
             // Remembered here too: put on the row it was already on, the
@@ -303,6 +365,11 @@ FocusScope {
         onEmptyTrashRequested: pane.emptyTrash()
         onPinRequested: (path) => pane.togglePin(path)
         onBurnRequested: (path, drive) => pane.confirmBurn(path, drive)
+        onDetailsRequested: if (pane.host) pane.host.showDetails()
+        compact: pane.touchMode && pane.form === "narrow"
+        // Let go of without moving, a lifted item stays lifted for as long
+        // as its menu shows.
+        onClosed: if (pane.host && pane.host.lift && pane.host.lift.phase === "lifted") pane.host.lift.end()
     }
 
     ColumnLayout {
@@ -388,17 +455,19 @@ FocusScope {
             id: view
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.leftMargin: pane.viewMode === "grid" ? 24 : pane.viewMode === "list" ? 20 : 0
-            Layout.rightMargin: pane.viewMode === "columns" ? 0 : 24
-            sourceComponent: pane.viewMode === "list" ? listView
-                           : pane.viewMode === "columns" ? columnsView
+            Layout.leftMargin: pane.form === "narrow" ? 4 : pane.shownView === "grid" ? 24 : pane.shownView === "list" ? 20 : 0
+            // Touch mode: the grid and the list reach the window's edge,
+            // so their scroll bar is at it.
+            Layout.rightMargin: pane.touchMode || pane.shownView === "columns" ? 0 : 24
+            sourceComponent: pane.shownView === "list" ? listView
+                           : pane.shownView === "columns" ? columnsView
                            : gridView
             // A new view picks up the selection the old one had.
             onLoaded: {
                 if (pane.cursorLetGo)
                     item.letGo()
                 else
-                    item.select(backend.folder.indexOfPath(pane.lastPath), true)
+                    pane.arrive(item, backend.folder.indexOfPath(pane.lastPath), true)
                 item.focusView()
             }
 
@@ -407,14 +476,52 @@ FocusScope {
             FolderDrop {
                 anchors.fill: parent
                 z: -1
-                enabled: pane.viewMode !== "columns"
+                enabled: pane.shownView !== "columns"
                 folder: backend.path
                 items: view.item
+                name: backend.crumbs.length > 0 ? backend.crumbs[backend.crumbs.length - 1].name : ""
             }
         }
-        Component { id: gridView; FolderGrid { zoom: pane.zoom; onZoomRequested: (step) => pane.zoomBy(step) } }
-        Component { id: listView; FolderList { } }
-        Component { id: columnsView; FolderColumns { } }
+        Component {
+            id: gridView
+            FolderGrid {
+                zoom: pane.zoom
+                onZoomRequested: (step) => pane.zoomBy(step)
+                touchMode: pane.touchMode
+                picking: pane.picking
+                pointing: !pane.touchMode || touch.pointing
+                minimumColumns: pane.form === "narrow" ? 2 : 1
+                edge: !pane.touchMode ? 0 : pane.form === "narrow" ? 4 : 24
+                steadyCell: pane.host && pane.host.steadyCell && !pane.closable ? pane.host.steadyCell : 0
+            }
+        }
+        Component { id: listView; FolderList { touchMode: pane.touchMode; picking: pane.picking; pointing: !pane.touchMode || touch.pointing } }
+        Component { id: columnsView; FolderColumns { touchMode: pane.touchMode; picking: pane.picking; pointing: !pane.touchMode || touch.pointing } }
+
+        // Touch mode's bars along the bottom: select mode's actions, or
+        // Paste Here once something has been copied or cut.
+        Loader {
+            Layout.fillWidth: true
+            active: pane.picking
+            visible: active
+            sourceComponent: SelectBar {
+                inTrash: pane.inTrash
+                canShare: fileMenu.selectionCanShare(backend.folder.selectedCount)
+                // Later: ending select mode takes this bar with it.
+                onDone: Qt.callLater(() => pane.picking = false)
+                onDeleteRequested: (paths) => pane.confirmDelete(paths)
+                onShareRequested: (near) => fileMenu.showShare(backend.path, near)
+            }
+        }
+        Loader {
+            Layout.fillWidth: true
+            active: pane.touchMode && pane.pasteOffered && !pane.picking && !pane.inTrash && !pane.inTailnet && backend.path !== "recent:"
+            visible: active
+            sourceComponent: PasteBar {
+                onPasted: { pane.pasteOffered = false; fileOps.paste(backend.path) }
+                onCancelled: { pane.pasteOffered = false; fileOps.clearClipboard() }
+            }
+        }
     }
 
     // Drawn over the window's top bar. It reaches back over the sidebar for
@@ -428,8 +535,14 @@ FocusScope {
         onEditDone: pane.focusView()
         previewVisible: pane.host ? pane.host.previewVisible : true
         previewFits: pane.host ? pane.host.detailsFit : true
-        viewMode: pane.viewMode
+        viewMode: pane.shownView
         closable: pane.closable
+        form: pane.form
+        picking: pane.picking
+        onPickingRequested: (on) => pane.picking = on
+        onBackRequested: pane.host && pane.host.goBack ? pane.host.goBack(pane) : backend.back()
+        sidebarShown: !!pane.host && pane.host.sidebarOpen === true
+        onSidebarRequested: if (pane.host) pane.host.sidebarOpen = !pane.host.sidebarOpen
         onTogglePreview: if (pane.host) pane.host.previewVisible = !pane.host.previewVisible
         onCycleView: pane.cycleView()
         onCloseRequested: pane.closeRequested()

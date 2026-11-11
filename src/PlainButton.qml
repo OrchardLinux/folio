@@ -11,8 +11,13 @@ AbstractButton {
     readonly property color fill: destructive ? theme.red : theme.accent
 
     implicitWidth: Math.max(88, label.implicitWidth + 32)
-    implicitHeight: 36
-    hoverEnabled: true
+    implicitHeight: touch.enabled ? 44 : 36
+    // In touch mode only the mouse hovers: a finger would leave the button
+    // it tapped looking hovered. Its own hover can't tell the two apart,
+    // so it's off, and a handler's hover counts while the mouse is in use.
+    hoverEnabled: !touch.enabled
+    HoverHandler { id: pointer; enabled: touch.enabled }
+    readonly property bool pointed: touch.enabled ? pointer.hovered && touch.pointing : button.hovered
     Accessible.name: text
     // Tab reaches it, a click doesn't take the keyboard: clicking acts, and
     // leaves the keyboard where it was.
@@ -26,8 +31,9 @@ AbstractButton {
 
     background: Rectangle {
         radius: Math.min(4, theme.radius)
-        color: button.filled ? (button.hovered ? Qt.lighter(button.fill, 1.08) : button.fill)
-             : button.hovered ? Qt.alpha(theme.foreground, 0.10)
+        color: button.filled ? (button.pointed ? Qt.lighter(button.fill, 1.08) : button.fill)
+             : touch.enabled && button.down ? Qt.alpha(theme.foreground, 0.15)
+             : button.pointed ? Qt.alpha(theme.foreground, 0.10)
              : Qt.alpha(theme.foreground, 0.05)
 
         // A ring around the button that has the keyboard, however it got
