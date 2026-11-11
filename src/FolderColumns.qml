@@ -117,6 +117,8 @@ Item {
                         ColumnDrop { items: column; folder: ancestor.path }
                         TapHandler {
                             acceptedButtons: Qt.RightButton
+                            // A finger has no right button, though its tap would pass for one.
+                            acceptedDevices: PointerDevice.AllDevices & ~PointerDevice.TouchScreen
                             onTapped: (point) => {
                                 const index = column.indexAt(point.position.x + column.contentX, point.position.y + column.contentY)
                                 view.contextMenu(index >= 0 ? folder.get(index) : null, ancestor.path, point.scenePosition)
@@ -158,6 +160,8 @@ Item {
 
                 TapHandler {
                     acceptedButtons: Qt.RightButton
+                    // A finger has no right button, though its tap would pass for one.
+                    acceptedDevices: PointerDevice.AllDevices & ~PointerDevice.TouchScreen
                     onTapped: (point) => view.contextMenu(selecting.menuAt(point), backend.path, point.scenePosition)
                 }
                 ColumnDrop { items: here; folder: backend.path }
@@ -200,6 +204,8 @@ Item {
                 ScrollBar.vertical: FolioScrollBar { }
                 TapHandler {
                     acceptedButtons: Qt.RightButton
+                    // A finger has no right button, though its tap would pass for one.
+                    acceptedDevices: PointerDevice.AllDevices & ~PointerDevice.TouchScreen
                     onTapped: (point) => {
                         const index = inside.indexAt(point.position.x + inside.contentX, point.position.y + inside.contentY)
                         view.contextMenu(index >= 0 ? inside.model.get(index) : null, view.selected.path, point.scenePosition)
