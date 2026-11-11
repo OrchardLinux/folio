@@ -14,10 +14,10 @@ TextField {
     placeholderTextColor: "transparent"
     leftPadding: 12
     rightPadding: 12
-    topPadding: 9
-    bottomPadding: 9
+    topPadding: touch.enabled ? 12 : 9
+    bottomPadding: touch.enabled ? 12 : 9
     background: Rectangle {
-        implicitHeight: 38
+        implicitHeight: touch.enabled ? 44 : 38
         color: theme.darkBackground
         border.width: 1
         border.color: field.activeFocus ? theme.accent : Qt.alpha(theme.foreground, 0.18)

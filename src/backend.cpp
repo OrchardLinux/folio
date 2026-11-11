@@ -352,18 +352,26 @@ bool Backend::goTyped(const QString &text) {
     return false;
 }
 
-QString Backend::complete(const QString &text, const QString &home, const QString &current) {
-    // Completes the last part to the folder names it starts, as far as
-    // they agree, keeping how the user typed the front (~, relative).
+// The folder names the last part of `text` starts, and in `head` what was
+// typed before it, kept as the user typed it (~, relative).
+static QStringList completionNames(const QString &text, const QString &home, const QString &current, QString *head) {
     const int slash = text.lastIndexOf('/');
-    const QString head = slash >= 0 ? text.left(slash + 1) : QString();
+    *head = slash >= 0 ? text.left(slash + 1) : QString();
     const QString part = text.mid(slash + 1);
-    const QString folder = expandTyped(head.isEmpty() ? "." : head, home, current);
+    const QString folder = Backend::expandTyped(head->isEmpty() ? "." : *head, home, current);
     QStringList matches;
     const auto names = QDir(folder).entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden, QDir::Name);
     for (const QString &name : names)
         if (name.startsWith(part) && (part.startsWith('.') || !name.startsWith('.')))
             matches << name;
+    return matches;
+}
+
+QString Backend::complete(const QString &text, const QString &home, const QString &current) {
+    // Completes the last part to the folder names it starts, as far as
+    // they agree.
+    QString head;
+    const QStringList matches = completionNames(text, home, current, &head);
     if (matches.isEmpty())
         return text;
     if (matches.size() == 1)
@@ -373,6 +381,22 @@ QString Backend::complete(const QString &text, const QString &home, const QStrin
         while (!m.startsWith(common))
             common.chop(1);
     return head + common;
+}
+
+QStringList Backend::completions(const QString &text, const QString &home, const QString &current) {
+    QString head;
+    QStringList paths;
+    for (const QString &name : completionNames(text, home, current, &head))
+        paths << head + name + "/";
+    return paths;
+}
+
+QStringList Backend::completions(const QString &text) const {
+    return completions(text, m_home, path());
+}
+
+bool Backend::canPreview(const QString &mime) {
+    return Previewer::viewerFor(mime, false) != "other";
 }
 
 QString Backend::completePath(const QString &text) const {

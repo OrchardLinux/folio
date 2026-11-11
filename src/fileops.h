@@ -19,12 +19,17 @@ class FileOps : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY clipboardChanged)
+    // The files on the clipboard, for saying what Paste would bring: how
+    // many (`count`), whether they were cut (`cut`), and the folder they're
+    // in when they share one (`from`).
+    Q_PROPERTY(QVariantMap clipboard READ clipboard NOTIFY clipboardChanged)
 
 public:
     explicit FileOps(QObject *parent = nullptr);
 
     QString busy() const { return m_busy; }
     bool canPaste() const;
+    QVariantMap clipboard() const;
 
     // The clipboard holds files the way GNOME and KDE apps expect
     // (x-special/gnome-copied-files plus text/uri-list), and their paths as
@@ -35,6 +40,8 @@ public:
     Q_INVOKABLE void cut(const QStringList &paths);
     Q_INVOKABLE void yank(const QStringList &paths);
     Q_INVOKABLE void paste(const QString &folder);
+    // Lets go of the files on the clipboard: nothing is left to paste.
+    Q_INVOKABLE void clearClipboard();
     // Files dropped on a folder: moved when they're on the same drive,
     // copied from another drive. Dropping something where it already is
     // does nothing.
@@ -47,6 +54,11 @@ public:
     // path may hold but a URI can't (a "#" or "?" in a name).
     Q_INVOKABLE QString uriList(const QStringList &paths) const;
     Q_INVOKABLE QStringList localPaths(const QList<QUrl> &urls) const;
+    // Files as the URLs a drop carries, for a drag that stays in the window.
+    Q_INVOKABLE QList<QUrl> urls(const QStringList &paths) const;
+    // Whether dropping these on `folder` would move them all (they're on
+    // its drive) rather than copy any, for saying which before letting go.
+    Q_INVOKABLE bool dropMoves(const QList<QUrl> &urls, const QString &folder) const;
 
     // A copy beside the original, named "(copy)".
     Q_INVOKABLE void duplicate(const QString &path);

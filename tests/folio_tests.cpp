@@ -14,6 +14,11 @@
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QQmlExpression>
+#include <QQuickItem>
+#include <QQuickWindow>
+#include <QSGRendererInterface>
+#include <QStyleHints>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -33,6 +38,7 @@
 #include "shapes.h"
 #include "theme.h"
 #include "thumbnails.h"
+#include "touch.h"
 #include "translator.h"
 
 // Puts XDG_DATA_HOME, where the trash and recent files live, in `path` for
@@ -273,6 +279,213 @@ static QStringList catalogProblems(const QString &folder)
     }
     return problems;
 }
+
+// Folio's window on a home folder of its own, as touch mode (or not) draws
+// it offscreen, with a finger to touch it.
+struct TouchWindow {
+    QTemporaryDir home;
+    Backend backend;
+    Theme theme;
+    FileOps fileOps;
+    Places places;
+    Touch touch;
+    Thumbnails thumbnails;
+    Translator translator;
+    QQmlEngine engine;
+    std::unique_ptr<QQuickWindow> window;
+    QPointingDevice *finger = QTest::createTouchDevice();
+    QString problem;
+
+    explicit TouchWindow(const QString &setting = "on")
+        : backend(home.path()), theme(home.filePath(".theme")), places(home.path()), touch(setting, false),
+          thumbnails(home.filePath(".cache"), {home.filePath(".none")}),
+          translator(home.filePath(".language"), home.path())
+    {
+        for (const char *folder : {"Documents", "Downloads", "Pictures", "Pictures/Lisbon", "Pictures/Lisbon/Alfama"})
+            QDir(home.path()).mkpath(folder);
+        for (int i = 1; i <= 30; ++i)
+            put(QString("Pictures/Lisbon/note-%1.txt").arg(i, 2, 10, QChar('0')), "x");
+        put("Downloads/boarding-pass.txt", "Gate 12");
+        put("Downloads/archive.bin", QByteArray(64, '\0'));
+        // Dated alike, so two pictures of the same window are the same.
+        const timespec then[2] = {{1767323040, 0}, {1767323040, 0}};
+        for (const char *name : {"Pictures/Lisbon/Alfama", "Pictures/Lisbon", "Pictures", "Documents", "Downloads"})
+            utimensat(AT_FDCWD, QFile::encodeName(home.filePath(name)).constData(), then, 0);
+        places.refresh();
+        qmlRegisterType<FolderModel>("Folio", 1, 0, "FolderModel");
+        engine.addImageProvider("thumb", new ThumbnailProvider(&thumbnails));
+        engine.addImageProvider("shape", new ShapeProvider);
+        QQmlContext *context = engine.rootContext();
+        context->setContextProperty("backend", &backend);
+        context->setContextProperty("fileOps", &fileOps);
+        context->setContextProperty("theme", &theme);
+        context->setContextProperty("touch", &touch);
+        context->setContextProperty("places", &places);
+        context->setContextProperty("translator", &translator);
+        // FOLIO_QML shows another checkout's interface instead, to compare
+        // pictures of the two.
+        const QString qml = qEnvironmentVariable("FOLIO_QML", sourceFolder());
+        QQmlComponent component(&engine, QUrl::fromLocalFile(qml + "/Main.qml"));
+        window.reset(qobject_cast<QQuickWindow *>(component.create()));
+        problem = component.errorString();
+        QObject::connect(&fileOps, &FileOps::failed, [this](const QString &message) { problem = message; });
+    }
+
+    void put(const QString &name, const QByteArray &contents)
+    {
+        QFile file(home.filePath(name));
+        if (file.open(QIODevice::WriteOnly))
+            file.write(contents);
+        file.close();
+        const timespec then[2] = {{1767323040, 0}, {1767323040, 0}};
+        utimensat(AT_FDCWD, QFile::encodeName(file.fileName()).constData(), then, 0);
+    }
+
+    // The window at a size, on a folder under home, once it's listed.
+    bool show(int width, int height, const QString &folder = {})
+    {
+        if (!window)
+            return false;
+        window->resize(width, height);
+        backend.navigate(home.filePath(folder));
+        return QTest::qWaitForWindowExposed(window.get()) && QTest::qWaitFor([&] { return !backend.folder()->loading(); });
+    }
+
+    // A value read off the window's QML, by an expression in its scope.
+    QVariant eval(const QString &expression)
+    {
+        QQmlExpression read(qmlContext(window.get()), window.get(), expression);
+        const QVariant value = read.evaluate();
+        if (read.hasError())
+            problem = read.error().toString();
+        return value;
+    }
+
+    // Where an item of the folder being shown is in the window: the middle
+    // of its row or tile.
+    QPoint at(const QString &name)
+    {
+        const int row = backend.folder()->indexOf(name);
+        return eval(QString("(() => { const view = activePane.scroller; view.positionViewAtIndex(%1, ListView.Contain);"
+                            " view.forceLayout(); const item = view.itemAtIndex(%1);"
+                            " return item.mapToItem(null, item.width / 2, item.height / 2) })()").arg(row)).toPointF().toPoint();
+    }
+
+    void press(const QPoint &point) { QTest::touchEvent(window.get(), finger).press(0, point); }
+    void move(const QPoint &point) { QTest::touchEvent(window.get(), finger).move(0, point); }
+    void release(const QPoint &point) { QTest::touchEvent(window.get(), finger).release(0, point); }
+    void tap(const QPoint &point)
+    {
+        press(point);
+        release(point);
+        QTest::qWait(20);
+    }
+    void type(const QString &text)
+    {
+        for (const QChar c : text)
+            QTest::keyClick(window.get(), c.toLatin1());
+    }
+    // Pressed and held until it counts as a long press, still down.
+    void hold(const QPoint &point)
+    {
+        press(point);
+        QTest::qWait(QGuiApplication::styleHints()->mousePressAndHoldInterval() + 150);
+    }
+    // Moved there in steps, as a finger moves, and still down.
+    void drag(const QPoint &from, const QPoint &to)
+    {
+        for (int step = 1; step <= 8; ++step) {
+            move(from + (to - from) * step / 8);
+            QTest::qWait(10);
+        }
+    }
+
+    // The middle of the showing button or menu entry that says `text`.
+    QQuickItem *button(const QString &text)
+    {
+        QList<QQuickItem *> items{window->contentItem()};
+        while (!items.isEmpty()) {
+            QQuickItem *item = items.takeLast();
+            if (!item->isVisible())
+                continue;
+            if (item->property("text").toString() == text && item->inherits("QQuickAbstractButton"))
+                return item;
+            items += item->childItems();
+        }
+        problem = "nothing shows " + text;
+        return nullptr;
+    }
+    QPoint control(const QString &text)
+    {
+        QQuickItem *item = button(text);
+        return item ? item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint() : QPoint();
+    }
+    // Whether a button looks hovered: by its own hover, or the pointer's.
+    bool hovered(const QString &text)
+    {
+        QQuickItem *item = button(text);
+        return item && (item->property("hovered").toBool() || item->property("pointed").toBool());
+    }
+    // The middle of the showing text that says `text`, and every text
+    // showing in the bar across the top.
+    QPoint label(const QString &text)
+    {
+        QList<QQuickItem *> items{window->contentItem()};
+        while (!items.isEmpty()) {
+            QQuickItem *item = items.takeLast();
+            if (!item->isVisible())
+                continue;
+            if (item->property("text").toString() == text && item->inherits("QQuickText"))
+                return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
+            items += item->childItems();
+        }
+        problem = "nothing says " + text;
+        return {};
+    }
+    QStringList barTexts()
+    {
+        QStringList texts;
+        QList<QQuickItem *> items{window->contentItem()};
+        while (!items.isEmpty()) {
+            QQuickItem *item = items.takeLast();
+            if (!item->isVisible())
+                continue;
+            if (item->inherits("QQuickText") && item->mapToScene(QPointF(0, 0)).y() < 60 && item->width() > 0)
+                texts << item->property("text").toString();
+            items += item->childItems();
+        }
+        texts.sort();
+        return texts;
+    }
+    // Where select mode's check box is on an item of the list.
+    QPoint box(const QString &name)
+    {
+        const int row = backend.folder()->indexOf(name);
+        return eval(QString("(() => { const item = activePane.scroller.itemAtIndex(%1);"
+                            " return item.mapToItem(null, 25, item.height / 2) })()").arg(row)).toPointF().toPoint();
+    }
+    // Whether the right-click menu is up.
+    bool menuShows()
+    {
+        const auto objects = window->findChildren<QObject *>();
+        for (QObject *object : objects)
+            if (QString(object->metaObject()->className()).startsWith("FileMenu") && object->property("visible").toBool())
+                return true;
+        return false;
+    }
+    QString phase() { return eval("lift.phase").toString(); }
+
+    // A picture of the window, when FOLIO_SHOTS names a folder for them.
+    void shot(const QString &name)
+    {
+        const QString folder = qEnvironmentVariable("FOLIO_SHOTS");
+        if (folder.isEmpty())
+            return;
+        QDir().mkpath(folder);
+        QTest::qWait(150);
+        window->grabWindow().save(folder + "/" + name + ".png");
+    }
+};
 
 class FolioTests : public QObject {
     Q_OBJECT
@@ -2531,6 +2744,518 @@ private slots:
         const QImage filled = provider.requestImage("24/24/0/0/00ff00/none/" + QUrl::toPercentEncoding("M6 6h12v12H6z"),
                                                     &size, QSize(24, 24));
         QCOMPARE(filled.pixelColor(12, 12), QColor(0, 255, 0));
+    }
+
+    void iconsStayInsideTheListTheyScrollIn()
+    {
+        // Qt's software renderer paints shapes past the edge of whatever
+        // clips them, so rows scrolled halfway out of the list drew their
+        // icons over the space above it.
+        TouchWindow t("off");
+        QVERIFY2(t.window, qPrintable(t.problem));
+        QVERIFY(t.show(1024, 768, "Pictures/Lisbon"));
+        if (t.window->rendererInterface()->graphicsApi() != QSGRendererInterface::Software)
+            QSKIP("Only the software renderer leaves shapes unclipped.");
+        for (const char *view : {"list", "grid"}) {
+            t.window->setProperty("viewMode", view);
+            QTRY_VERIFY(!t.at("Alfama").isNull());
+            const int top = t.eval("activePane.scroller.mapToItem(null, 0, 0).y").toInt();
+            const int left = t.eval("activePane.scroller.mapToItem(null, 0, 0).x").toInt();
+            // Scrolled as a wheel or a finger scrolls: a little at a time.
+            for (int step = 0; step < 30; ++step) {
+                t.eval("activePane.scroller.contentY += 5");
+                QTest::qWait(16);
+            }
+            QTest::qWait(150);
+            const QImage picture = t.window->grabWindow();
+            const qreal ratio = picture.devicePixelRatio();
+            // The strip between the bar and the list: one colour throughout.
+            const QRgb empty = picture.pixel(int((left + 2) * ratio), int((top - 4) * ratio));
+            int strays = 0;
+            for (int y = top - 14; y < top; ++y)
+                for (int x = left; x < left + 400; ++x)
+                    strays += picture.pixel(int(x * ratio), int(y * ratio)) != empty;
+            QVERIFY2(strays == 0, qPrintable(QString("%1 stray pixels above the %2").arg(strays).arg(view)));
+            // And inside the view they're still drawn.
+            int drawn = 0;
+            for (int y = top; y < top + 200; ++y)
+                for (int x = left; x < left + 400; ++x)
+                    drawn += picture.pixel(int(x * ratio), int(y * ratio)) != empty;
+            QVERIFY2(drawn > 200, qPrintable(QString("only %1 pixels drawn in the %2").arg(drawn).arg(view)));
+        }
+    }
+
+    void touchModeFollowsTheSettingThenTheHardware()
+    {
+        // On with a touchscreen and off without, unless folio.conf says.
+        QVERIFY(Touch::decide("", true));
+        QVERIFY(!Touch::decide("", false));
+        QVERIFY(Touch::decide("auto", true));
+        QVERIFY(Touch::decide("on", false));
+        QVERIFY(Touch::decide("true", false));
+        QVERIFY(!Touch::decide("off", true));
+        QVERIFY(!Touch::decide(" Off ", true));
+    }
+
+    void touchOffLeavesTheWindowAlone()
+    {
+        // With touch mode off the window keeps its size limits and its one
+        // layout, and a finger is a pointer: its tap selects.
+        TouchWindow t("off");
+        QVERIFY2(t.window, qPrintable(t.problem));
+        QCOMPARE(t.window->minimumWidth(), 720);
+        QVERIFY(t.show(760, 600, "Pictures/Lisbon"));
+        t.window->setProperty("viewMode", "list");
+        QCOMPARE(t.eval("form").toString(), QString("wide"));
+        QTRY_VERIFY(!t.at("Alfama").isNull());
+        t.tap(t.at("note-03.txt"));
+        QCOMPARE(t.backend.folder()->selectedPaths(), QStringList{t.home.filePath("Pictures/Lisbon/note-03.txt")});
+        t.tap(t.at("Alfama"));
+        QCOMPARE(t.backend.path(), t.home.filePath("Pictures/Lisbon"));
+        t.hold(t.at("note-03.txt"));
+        QVERIFY(!t.menuShows());
+        t.release(t.at("note-03.txt"));
+        QVERIFY2(t.problem.isEmpty(), qPrintable(t.problem));
+    }
+
+    void touchOffPicturesTheWindowAsItWas()
+    {
+        // Pictures of the keyboard-first window, for comparing with ones of
+        // the window as it was before touch mode (dev/compare-off does).
+        if (!qEnvironmentVariableIsSet("FOLIO_SHOTS"))
+            QSKIP("FOLIO_SHOTS names no folder for the pictures");
+        TouchWindow t("off");
+        QVERIFY2(t.window, qPrintable(t.problem));
+        QVERIFY(t.show(1280, 800, "Pictures/Lisbon"));
+        for (const QSize size : {QSize(1280, 800), QSize(900, 600), QSize(720, 460)}) {
+            t.window->resize(size);
+            for (const char *view : {"columns", "grid", "list"}) {
+                t.window->setProperty("viewMode", view);
+                QTRY_COMPARE(t.window->width(), size.width());
+                t.shot(QString("off-%1-%2").arg(size.width()).arg(view));
+            }
+        }
+        t.window->setProperty("helpVisible", true);
+        t.shot("off-help");
+    }
+
+    void touchLaysTheWindowOutByItsWidth()
+    {
+        TouchWindow t;
+        QVERIFY2(t.window, qPrintable(t.problem));
+        QCOMPARE(t.window->minimumWidth(), 320);
+        QVERIFY(t.show(1024, 768, "Pictures/Lisbon"));
+        t.window->setProperty("viewMode", "columns");
+        QCOMPARE(t.eval("form").toString(), QString("wide"));
+        QCOMPARE(t.eval("activePane.shownView").toString(), QString("columns"));
+        t.shot("wide-columns");
+        t.window->setProperty("viewMode", "grid");
+        t.shot("wide-grid");
+
+        // A tablet held upright: no sidebar until its button brings it
+        // over the files, and going somewhere from it puts it away again.
+        t.window->resize(768, 1024);
+        QTRY_COMPARE(t.eval("form").toString(), QString("medium"));
+        QVERIFY(!t.eval("detailsFit").toBool());
+        t.shot("medium-grid");
+        t.tap(t.control("Sidebar"));
+        QTRY_VERIFY(t.eval("sidebarOpen").toBool());
+        // A finger leaves no hover behind on what it tapped, nor its
+        // tooltip. Only the mouse hovers, and only while it's the one in
+        // use: Qt reports a finger's touch as the pointer arriving too.
+        QTest::qWait(700);
+        QVERIFY(!t.hovered("Sidebar"));
+        QVERIFY(!t.touch.pointing());
+        QTest::mouseMove(t.window.get(), t.control("Select"));
+        QTRY_VERIFY(t.touch.pointing());
+        QTRY_VERIFY(t.hovered("Select"));
+        t.press(QPoint(130, 900));
+        QTRY_VERIFY(!t.touch.pointing());
+        QVERIFY(!t.hovered("Select"));
+        t.release(QPoint(130, 900));
+        QTest::qWait(50);
+        t.shot("medium-sidebar");
+        t.tap(t.control("Downloads"));
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Downloads"));
+        QVERIFY(!t.eval("sidebarOpen").toBool());
+
+        // A swipe in from the edge brings the sidebar too, and a swipe
+        // back out on it puts it away.
+        t.press(QPoint(6, 500));
+        t.drag(QPoint(6, 500), QPoint(220, 505));
+        t.release(QPoint(220, 505));
+        QTRY_VERIFY(t.eval("sidebarOpen").toBool());
+        QTest::qWait(300);
+        t.press(QPoint(200, 700));
+        t.drag(QPoint(200, 700), QPoint(20, 705));
+        t.release(QPoint(20, 705));
+        QTRY_VERIFY(!t.eval("sidebarOpen").toBool());
+        QTest::qWait(300);
+
+        // A phone: the list where the columns were, two tiles side by side
+        // in the grid, and Back from the first folder is the places.
+        t.window->setProperty("viewMode", "columns");
+        t.window->resize(375, 667);
+        QTRY_COMPARE(t.eval("form").toString(), QString("narrow"));
+        QCOMPARE(t.eval("activePane.shownView").toString(), QString("list"));
+        t.shot("narrow-list");
+        t.tap(t.control("Back"));
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Pictures/Lisbon"));
+        t.window->setProperty("viewMode", "grid");
+        QTRY_COMPARE(t.eval("activePane.scroller.columns").toInt(), 2);
+        t.shot("narrow-grid");
+        t.tap(t.control("Back"));
+        QTRY_VERIFY(t.eval("atPlaces").toBool());
+        t.shot("narrow-places");
+        t.tap(t.control("Documents"));
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Documents"));
+        QVERIFY(!t.eval("atPlaces").toBool());
+        t.tap(t.control("Back"));
+        QTRY_VERIFY(t.eval("atPlaces").toBool());
+
+        // Wide again, the columns are back.
+        t.window->setProperty("viewMode", "columns");
+        t.window->resize(1024, 768);
+        QTRY_COMPARE(t.eval("activePane.shownView").toString(), QString("columns"));
+        QVERIFY(!t.eval("atPlaces").toBool());
+        QVERIFY2(t.problem.isEmpty(), qPrintable(t.problem));
+    }
+
+    void touchTapOpensAndALongPressBringsTheMenu()
+    {
+        TouchWindow t;
+        QVERIFY2(t.window, qPrintable(t.problem));
+        QVERIFY(t.show(1024, 768, "Pictures/Lisbon"));
+        t.window->setProperty("viewMode", "list");
+        QTRY_VERIFY(!t.at("Alfama").isNull());
+
+        // A folder arrives with nothing selected: a finger needs no cursor.
+        QTRY_VERIFY(!t.backend.folder()->loading());
+        QCOMPARE(t.backend.folder()->selectedCount(), 0);
+        QCOMPARE(t.eval("activePane.scroller.currentIndex").toInt(), -1);
+
+        // A folder opens at a tap; Back and Up are buttons, and going back
+        // shows where one was.
+        t.tap(t.at("Alfama"));
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Pictures/Lisbon/Alfama"));
+        t.tap(t.control("Back"));
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Pictures/Lisbon"));
+        QTRY_COMPARE(t.backend.folder()->selectedPaths(), QStringList{t.home.filePath("Pictures/Lisbon/Alfama")});
+        t.tap(t.control("Up"));
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Pictures"));
+        t.tap(t.at("Lisbon"));
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Pictures/Lisbon"));
+        QTRY_VERIFY(!t.backend.folder()->loading());
+        QCOMPARE(t.backend.folder()->selectedCount(), 0);
+
+        // A file's tap selects it and brings the details, if they were
+        // put away.
+        t.window->setProperty("previewVisible", false);
+        t.tap(t.at("note-05.txt"));
+        QTRY_VERIFY(t.eval("previewVisible").toBool());
+        QCOMPARE(t.backend.folder()->selectedPaths(), QStringList{t.home.filePath("Pictures/Lisbon/note-05.txt")});
+        QVERIFY(!t.backend.previewing());
+
+        // In the grid only the picture and the name are the item: a tap
+        // between two tiles lets go of the selection.
+        t.window->setProperty("viewMode", "grid");
+        QTRY_VERIFY(!t.at("note-05.txt").isNull());
+        QTest::qWait(100);
+        const QPoint tile = t.at("note-05.txt");
+        const int cell = t.eval("activePane.scroller.cellWidth").toInt();
+        t.tap(tile + QPoint(cell / 2, 0));
+        QCOMPARE(t.backend.folder()->selectedCount(), 0);
+        // The details coming and going leave the tiles of the rows that
+        // still fit where they were.
+        t.window->setProperty("previewVisible", false);
+        QTRY_VERIFY(!t.at("note-01.txt").isNull());
+        QTest::qWait(50);
+        const QPoint without = t.at("note-01.txt");
+        QCOMPARE(t.eval("activePane.scroller.columns").toInt(), 5);
+        QVERIFY(t.eval("activePane.scroller.room - activePane.scroller.columns * activePane.scroller.cellWidth").toInt() < 8);
+        t.shot("wide-grid-no-details");
+        t.window->setProperty("previewVisible", true);
+        QTest::qWait(50);
+        QCOMPARE(t.at("note-01.txt"), without);
+        // And the columns fill the room either way, up to the scroll bar's
+        // strip at the window's edge.
+        QVERIFY(t.eval("activePane.scroller.room - activePane.scroller.columns * activePane.scroller.cellWidth").toInt() < 8);
+        QCOMPARE(t.eval("activePane.scroller.columns").toInt(), 3);
+        QVERIFY(t.eval("detailsWidth").toInt() < 340);
+        QVERIFY(!t.at("note-05.txt").isNull());
+        t.tap(t.at("note-05.txt") + QPoint(cell / 2, 0));
+        QCOMPARE(t.backend.folder()->selectedCount(), 0);
+        t.tap(t.at("note-05.txt"));
+        QCOMPARE(t.backend.folder()->selectedPaths(), QStringList{t.home.filePath("Pictures/Lisbon/note-05.txt")});
+        t.shot("wide-grid-details");
+        t.window->setProperty("viewMode", "list");
+        QTRY_VERIFY(!t.at("note-02.txt").isNull());
+
+        // A long press lifts the item, selected, with the menu beside it,
+        // and letting go leaves both up until the menu goes.
+        const QPoint note = t.at("note-02.txt");
+        t.hold(note);
+        QCOMPARE(t.phase(), QString("lifted"));
+        QVERIFY(t.menuShows());
+        QCOMPARE(t.backend.folder()->selectedPaths(), QStringList{t.home.filePath("Pictures/Lisbon/note-02.txt")});
+        t.shot("wide-lifted");
+        t.release(note);
+        QCOMPARE(t.phase(), QString("lifted"));
+        QVERIFY(t.menuShows());
+        // A tap beside the menu closes it and does nothing else: the file
+        // or folder under the tap is left alone.
+        t.tap(t.at("Alfama"));
+        QTRY_VERIFY(!t.menuShows());
+        QTRY_COMPARE(t.phase(), QString());
+        QCOMPARE(t.backend.path(), t.home.filePath("Pictures/Lisbon"));
+        QCOMPARE(t.backend.folder()->selectedPaths(), QStringList{t.home.filePath("Pictures/Lisbon/note-02.txt")});
+
+        // On empty space it's the folder's menu, and nothing is lifted.
+        t.backend.navigate(t.home.filePath("Pictures/Lisbon/Alfama"));
+        QTRY_VERIFY(!t.backend.folder()->loading());
+        t.hold(QPoint(450, 400));
+        QVERIFY(t.menuShows());
+        QCOMPARE(t.phase(), QString());
+        t.release(QPoint(450, 400));
+        t.eval("activePane.closeMenu()");
+        QVERIFY2(t.problem.isEmpty(), qPrintable(t.problem));
+    }
+
+    void touchSelectModeTogglesAndPasteHereMoves()
+    {
+        TouchWindow t;
+        QVERIFY2(t.window, qPrintable(t.problem));
+        QVERIFY(t.show(1024, 768, "Pictures/Lisbon"));
+        t.window->setProperty("viewMode", "list");
+        QTRY_VERIFY(!t.at("Alfama").isNull());
+
+        // Select starts with nothing selected; taps toggle.
+        t.tap(t.control("Select"));
+        QTRY_VERIFY(t.eval("activePane.picking").toBool());
+        QCOMPARE(t.backend.folder()->selectedCount(), 0);
+        t.tap(t.at("note-01.txt"));
+        t.tap(t.at("note-03.txt"));
+        t.tap(t.at("note-04.txt"));
+        QCOMPARE(t.backend.folder()->selectedCount(), 3);
+        t.tap(t.at("note-03.txt"));
+        QCOMPARE(t.backend.folder()->selectedCount(), 2);
+        t.shot("wide-select");
+
+        // A finger dragged down the check boxes selects all it passes,
+        // without scrolling, and keeps what was selected.
+        const QPoint from = t.box("note-06.txt");
+        const QPoint to = t.box("note-09.txt");
+        const qreal scrolled = t.eval("activePane.scroller.contentY").toReal();
+        t.press(from);
+        t.drag(from, to);
+        t.release(to);
+        QCOMPARE(t.backend.folder()->selectedCount(), 6);
+        QCOMPARE(t.eval("activePane.scroller.contentY").toReal(), scrolled);
+        t.tap(t.at("note-06.txt"));
+        t.tap(t.at("note-07.txt"));
+        t.tap(t.at("note-08.txt"));
+        t.tap(t.at("note-09.txt"));
+        QCOMPARE(t.backend.folder()->selectedCount(), 2);
+
+        // Cut ends select mode and offers Paste Here, wherever one goes.
+        t.tap(t.control("Cut"));
+        QTRY_VERIFY(!t.eval("activePane.picking").toBool());
+        QTRY_VERIFY(t.eval("activePane.pasteOffered").toBool());
+        QCOMPARE(t.fileOps.clipboard().value("count").toInt(), 2);
+        QVERIFY(t.fileOps.clipboard().value("cut").toBool());
+        QCOMPARE(t.fileOps.clipboard().value("from").toString(), t.home.filePath("Pictures/Lisbon"));
+        t.tap(t.at("Alfama"));
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Pictures/Lisbon/Alfama"));
+        t.shot("wide-paste-here");
+        t.tap(t.control("Paste Here"));
+        QTRY_VERIFY(QFile::exists(t.home.filePath("Pictures/Lisbon/Alfama/note-01.txt")));
+        QTRY_VERIFY(QFile::exists(t.home.filePath("Pictures/Lisbon/Alfama/note-04.txt")));
+        QVERIFY(!QFile::exists(t.home.filePath("Pictures/Lisbon/note-01.txt")));
+        QTRY_VERIFY(!t.eval("activePane.pasteOffered").toBool());
+
+        // Done leaves select mode with nothing selected.
+        QTRY_VERIFY(t.backend.folder()->indexOf("note-01.txt") >= 0);
+        t.tap(t.control("Select"));
+        QTRY_VERIFY(t.eval("activePane.picking").toBool());
+        t.tap(t.at("note-01.txt"));
+        QCOMPARE(t.backend.folder()->selectedCount(), 1);
+        t.tap(t.control("Done"));
+        QTRY_VERIFY(!t.eval("activePane.picking").toBool());
+        QCOMPARE(t.backend.folder()->selectedCount(), 0);
+        QVERIFY2(t.problem.isEmpty(), qPrintable(t.problem));
+    }
+
+    void touchDragSpringsFoldersOpenAndScrollsAtTheEdges()
+    {
+        TouchWindow t;
+        QVERIFY2(t.window, qPrintable(t.problem));
+        QVERIFY(t.show(1024, 768, "Pictures/Lisbon"));
+        t.window->setProperty("viewMode", "list");
+        QTRY_VERIFY(!t.at("Alfama").isNull());
+
+        // Held, then moved: the menu goes and the item comes along. Over a
+        // folder the label says what a drop would do; held there a second,
+        // the folder opens, and letting go inside drops it there.
+        const QPoint note = t.at("note-03.txt");
+        const QPoint folder = t.at("Alfama");
+        t.hold(note);
+        QCOMPARE(t.phase(), QString("lifted"));
+        t.drag(note, folder);
+        QCOMPARE(t.phase(), QString("dragging"));
+        QVERIFY(!t.menuShows());
+        QTRY_COMPARE(t.eval("lift.says").toString(), QString("Move to Alfama"));
+        t.shot("wide-drag");
+        QTRY_COMPARE_WITH_TIMEOUT(t.backend.path(), t.home.filePath("Pictures/Lisbon/Alfama"), 3000);
+        const QPoint inside(450, 500);
+        t.drag(folder, inside);
+        QTRY_COMPARE(t.eval("lift.says").toString(), QString("Move to Alfama"));
+        t.release(inside);
+        QTRY_VERIFY(QFile::exists(t.home.filePath("Pictures/Lisbon/Alfama/note-03.txt")));
+        QVERIFY(!QFile::exists(t.home.filePath("Pictures/Lisbon/note-03.txt")));
+        QCOMPARE(t.phase(), QString());
+
+        // Held at the bottom edge the list scrolls; let go where nothing
+        // takes it, the item stays where it was.
+        t.backend.navigate(t.home.filePath("Pictures/Lisbon"));
+        QTRY_VERIFY(!t.backend.folder()->loading());
+        QTRY_VERIFY(!t.at("note-01.txt").isNull());
+        const QPoint first = t.at("note-01.txt");
+        const QPoint edge(first.x(), t.window->height() - 12);
+        t.hold(first);
+        t.drag(first, edge);
+        QTRY_VERIFY(t.eval("activePane.scroller.contentY").toReal() > 200);
+        t.shot("wide-edge-scroll");
+        t.release(edge);
+        QCOMPARE(t.phase(), QString());
+        QTest::qWait(100);
+        QVERIFY(QFile::exists(t.home.filePath("Pictures/Lisbon/note-01.txt")));
+        QVERIFY2(t.problem.isEmpty(), qPrintable(t.problem));
+    }
+
+    void touchPathFitsTheBarAndCompletesByTap()
+    {
+        TouchWindow t;
+        QVERIFY2(t.window, qPrintable(t.problem));
+        QVERIFY(t.show(1024, 768, "Pictures/Lisbon/Alfama"));
+        t.window->setProperty("viewMode", "list");
+        QVERIFY(t.barTexts().contains("Pictures"));
+        QVERIFY(!t.barTexts().contains("…"));
+
+        // On a phone the path is … and where you are; the … lists the rest.
+        t.window->resize(375, 667);
+        QTRY_VERIFY(t.barTexts().contains("…"));
+        QVERIFY(t.barTexts().contains("Alfama"));
+        QVERIFY(!t.barTexts().contains("Pictures"));
+        t.tap(t.label("…"));
+        t.shot("narrow-crumbs");
+        t.tap(t.control("Pictures"));
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Pictures"));
+
+        // A tap past the crumbs opens the path for typing; what Tab would
+        // choose among is a list to tap.
+        t.window->resize(1024, 768);
+        QTRY_COMPARE(t.eval("form").toString(), QString("wide"));
+        t.tap(QPoint(500, 30));
+        QTRY_VERIFY(t.eval("activePane.typing").toBool());
+        t.type("~/Do");
+        QTRY_VERIFY2(!t.label("~/Documents/").isNull(), qPrintable(t.problem));
+        t.shot("wide-completions");
+        t.tap(t.label("~/Downloads/"));
+        QTest::keyClick(t.window.get(), Qt::Key_Return);
+        QTRY_COMPARE(t.backend.path(), t.home.filePath("Downloads"));
+        QVERIFY(!t.eval("activePane.typing").toBool());
+        t.problem.clear();
+
+        // A finger down anywhere else is done typing, a path or a search,
+        // and a search that found something keeps showing it.
+        t.tap(QPoint(500, 30));
+        QTRY_VERIFY(t.eval("activePane.typing").toBool());
+        t.tap(QPoint(450, 500));
+        QTRY_VERIFY(!t.eval("activePane.typing").toBool());
+        t.tap(t.control("Search"));
+        QTRY_VERIFY(t.eval("activePane.typing").toBool());
+        t.type("arch");
+        QTRY_COMPARE(t.backend.folder()->rowCount(), 1);
+        // While it's typed the bar is the search and Cancel, nothing else;
+        // the folder's buttons come back for what it found.
+        QVERIFY(t.control("Select").isNull());
+        t.problem.clear();
+        t.shot("wide-search-typing");
+        t.tap(QPoint(450, 500));
+        QTRY_VERIFY(!t.eval("activePane.typing").toBool());
+        QVERIFY(!t.control("Select").isNull());
+        t.shot("wide-search-results");
+        QCOMPARE(t.backend.folder()->query(), QString("arch"));
+        t.tap(t.control("Cancel"));
+        QTRY_COMPARE(t.backend.folder()->query(), QString());
+
+        // Cancel is Escape, for a path being typed and for a search.
+        t.tap(t.control("Search"));
+        QTRY_VERIFY(t.eval("activePane.typing").toBool());
+        t.type("board");
+        QTRY_COMPARE(t.backend.folder()->query(), QString("board"));
+        QTRY_COMPARE(t.backend.folder()->rowCount(), 1);
+        t.tap(t.control("Cancel"));
+        QTRY_COMPARE(t.backend.folder()->query(), QString());
+        QVERIFY2(t.problem.isEmpty(), qPrintable(t.problem));
+    }
+
+    void touchDetailsComeUpAsASheetWhereTheyDontFit()
+    {
+        TouchWindow t;
+        QVERIFY2(t.window, qPrintable(t.problem));
+        QVERIFY(t.show(768, 1024, "Downloads"));
+        t.window->setProperty("viewMode", "list");
+        QTRY_VERIFY(!t.at("boarding-pass.txt").isNull());
+        // A file no app opens says so where Open would be.
+        t.tap(t.at("archive.bin"));
+        QTRY_VERIFY(t.eval("detailsOpen").toBool());
+        QTRY_VERIFY2(!t.label("No app opens this").isNull(), qPrintable(t.problem));
+        QTest::qWait(300);
+        t.tap(QPoint(380, 150));
+        QTRY_VERIFY(!t.eval("detailsOpen").toBool());
+        QTest::qWait(300);
+        t.problem.clear();
+        const QPoint file = t.at("boarding-pass.txt");
+        // A tap on a file brings the sheet, as Details in the menu does.
+        t.tap(file);
+        QTRY_VERIFY(t.eval("detailsOpen").toBool());
+        QTest::qWait(300);
+        t.tap(QPoint(380, 150));
+        QTRY_VERIFY(!t.eval("detailsOpen").toBool());
+        QTest::qWait(300);
+        t.hold(file);
+        t.release(file);
+        QVERIFY(t.menuShows());
+        t.tap(t.control("Details"));
+        QTRY_VERIFY(t.eval("detailsOpen").toBool());
+        QTRY_COMPARE(t.phase(), QString());
+        QTRY_VERIFY2(!t.label("boarding-pass.txt").isNull(), qPrintable(t.problem));
+        t.shot("medium-details");
+        // Once it's up, a tap on the files above it puts it away.
+        QTRY_COMPARE(t.eval("detailsOpen").toBool(), true);
+        QTest::qWait(300);
+        t.tap(QPoint(380, 150));
+        QTRY_VERIFY(!t.eval("detailsOpen").toBool());
+
+        // On a phone the menu leads with Copy, Cut, Share and Delete as
+        // buttons, and Cut there offers Paste Here like any other.
+        t.window->resize(375, 667);
+        QTRY_COMPARE(t.eval("form").toString(), QString("narrow"));
+        QTRY_VERIFY(!t.at("boarding-pass.txt").isNull());
+        const QPoint again = t.at("boarding-pass.txt");
+        t.hold(again);
+        t.release(again);
+        QVERIFY(t.menuShows());
+        t.shot("narrow-menu");
+        t.tap(t.control("Cut"));
+        QTRY_VERIFY(!t.menuShows());
+        QTRY_VERIFY(t.eval("activePane.pasteOffered").toBool());
+        t.shot("narrow-paste-here");
+        t.tap(t.control("Cancel"));
+        QTRY_VERIFY(!t.eval("activePane.pasteOffered").toBool());
+        QVERIFY(!t.fileOps.canPaste());
+        QVERIFY2(t.problem.isEmpty(), qPrintable(t.problem));
     }
 
 private:

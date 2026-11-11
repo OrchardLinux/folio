@@ -36,7 +36,9 @@ Rectangle {
 
     color: theme.darkBackground
 
-    Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: Qt.alpha(theme.foreground, 0.12) }
+    // The line between it and the files beside it; none as a sheet.
+    property bool edged: true
+    Rectangle { visible: pane.edged; anchors.left: parent.left; width: 1; height: parent.height; color: Qt.alpha(theme.foreground, 0.12) }
 
     ColumnLayout {
         anchors.fill: parent
@@ -169,14 +171,29 @@ Rectangle {
 
         Item { Layout.fillHeight: true }
 
+        // Touch mode: Space as a button, since a tap brings these details
+        // rather than the preview.
+        PlainButton {
+            Layout.fillWidth: true
+            visible: touch.enabled && pane.hasItem && !pane.item.isDir && !pane.machine && !pane.trashed && !pane.noting
+                     && backend.canPreview(pane.item.mime || "")
+            text: qsTr("Preview")
+            onClicked: pane.folderPane.paneBackend.togglePreview(pane.item.path)
+        }
         AbstractButton {
             id: openButton
             Layout.fillWidth: true
-            implicitHeight: 40
+            implicitHeight: touch.enabled ? 44 : 40
             focusPolicy: Qt.NoFocus
-            hoverEnabled: true
-            enabled: !pane.noting
-            text: pane.trashed || pane.noting ? qsTr("Restore") : pane.hasItem && pane.item.isDir ? qsTr("Open folder") : qsTr("Open")
+            hoverEnabled: !touch.enabled || touch.pointing
+            // A file no installed app opens says so here, rather than offer
+            // an Open that would only answer with a message.
+            readonly property bool opens: !pane.hasItem || pane.item.isDir || pane.machine || pane.trashed || pane.noting
+                                          || fileOps.appsFor(pane.item.path).length > 0
+            enabled: !pane.noting && opens
+            opacity: opens ? 1 : 0.45
+            text: pane.trashed || pane.noting ? qsTr("Restore") : pane.hasItem && pane.item.isDir ? qsTr("Open folder")
+                : opens ? qsTr("Open") : qsTr("No app opens this")
             Accessible.name: text
             onClicked: pane.trashed ? pane.folderPane.paneFileOps.restore([pane.item.path]) : pane.folderPane.paneBackend.open(pane.item.path)
             background: Rectangle {
@@ -185,7 +202,7 @@ Rectangle {
             }
             contentItem: RowLayout {
                 Text { Layout.leftMargin: 14; Layout.fillWidth: true; text: openButton.text; color: theme.accentForeground; font.weight: Font.DemiBold }
-                Text { Layout.rightMargin: 14; text: "⏎"; color: theme.accentForeground }
+                Text { Layout.rightMargin: 14; visible: openButton.opens; text: "⏎"; color: theme.accentForeground }
             }
         }
     }

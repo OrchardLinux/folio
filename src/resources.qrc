@@ -15,6 +15,12 @@
         <file>HelpOverlay.qml</file>
         <file>Selecting.qml</file>
         <file>Band.qml</file>
+        <file>FileDrop.qml</file>
+        <file>TouchLift.qml</file>
+        <file>BarButton.qml</file>
+        <file>SelectBar.qml</file>
+        <file>PasteBar.qml</file>
+        <file>DetailsSheet.qml</file>
         <file>FolioMenu.qml</file>
         <file>FolioMenuItem.qml</file>
         <file>MenuLine.qml</file>

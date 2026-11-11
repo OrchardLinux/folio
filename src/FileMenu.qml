@@ -20,6 +20,12 @@ FolioMenu {
     signal deleteRequested(var paths)
     signal emptyTrashRequested()
     signal pinRequested(string path)
+    signal detailsRequested()
+    // On a phone (touch mode), Copy, Cut, Share and Delete are a row of
+    // buttons along the top, so the menu fits the screen.
+    property bool compact: false
+    // Kept on screen when it opens beside an item near the edge.
+    margins: touch.enabled ? 8 : -1
     // In the trash the menu is about getting things back, or letting go.
     readonly property bool trashView: fileOps.inTrash(folder)
     // The tailnet view lists machines, which only open.
@@ -42,7 +48,13 @@ FolioMenu {
     // Alt+Return) beside the item it's about. Mirrored, it opens leftward,
     // and beside the item's icon and name at its right end; Menu mirrors
     // neither by itself.
-    function show(clicked, where, near, at) {
+    // `beside` (touch mode) puts it next to `near` rather than over it: to
+    // the side of a tile, under a row.
+    // Opening beside an item makes that item the menu's parent, and the
+    // item may be gone by the next time; a click's menu opens in the pane.
+    property Item home: null
+    Component.onCompleted: home = parent
+    function show(clicked, where, near, at, beside) {
         target = clicked
         folder = where
         shifted = fileOps.shiftHeld()
@@ -55,21 +67,84 @@ FolioMenu {
         for (let i = 0; i < count; ++i) {
             const entry = itemAt(i)
             if (entry && entry.subMenu)
-                entry.shown = entry.subMenu === shareMenu ? canShare : canOpenWith
+                entry.shown = entry.subMenu === shareMenu ? canShare && !compact : canOpenWith
         }
         // The menu's own `mirrored` is only set once it's open.
         const rtl = Qt.application.layoutDirection === Qt.RightToLeft
-        if (near) {
+        if (near && beside) {
+            const row = near.width > 320
+            popup(near, row ? (rtl ? near.width - width - 14 : 14) : (rtl ? -width - 8 : near.width + 8), row ? near.height + 6 : 0)
+        } else if (near) {
             const x = Math.min(near.width / 2, 120)
             popup(near, rtl ? near.width - x - width : x, near.height / 2)
         } else if (at) {
-            const p = parent.mapFromItem(null, at.x, at.y)
-            popup(rtl ? p.x - width : p.x, p.y)
+            const p = home.mapFromItem(null, at.x, at.y)
+            popup(home, rtl ? p.x - width : p.x, p.y)
         } else {
             popup()
         }
     }
 
+    // Share for what's selected, from select mode's bar: the Share menu on
+    // its own, above the button.
+    function selectionCanShare() {
+        return fileOps.hasLocalSend() || places.peers.length > 0
+    }
+    function showShare(where, near) {
+        const paths = backend.folder.selectedPaths()
+        if (paths.length === 0)
+            return
+        target = backend.folder.get(backend.folder.indexOfPath(paths[0]))
+        folder = where
+        shareMenu.popup(near, 0, -shareMenu.height - 6)
+    }
+
+    Item {
+        id: quick
+        readonly property bool shown: fileMenu.compact && fileMenu.forItem && fileMenu.forFiles
+        visible: shown
+        width: parent ? parent.width : 0
+        height: shown ? 64 : 0
+        Row {
+            anchors.fill: parent
+            anchors.leftMargin: 4
+            anchors.rightMargin: 4
+            readonly property real each: width / 4
+            BarButton {
+                width: parent.each
+                glyph: "copy"
+                text: qsTr("Copy")
+                onClicked: { fileOps.copy(fileMenu.paths); fileMenu.close() }
+            }
+            BarButton {
+                width: parent.each
+                glyph: "cut"
+                text: qsTr("Cut")
+                enabled: !fileMenu.trashView
+                onClicked: { fileOps.cut(fileMenu.paths); fileMenu.close() }
+            }
+            BarButton {
+                id: quickShare
+                width: parent.each
+                glyph: "share"
+                text: qsTr("Share")
+                enabled: fileMenu.canShare
+                onClicked: shareMenu.popup(quickShare, 0, quickShare.height)
+            }
+            BarButton {
+                width: parent.each
+                glyph: "trash"
+                text: fileMenu.trashView ? qsTr("Delete…") : qsTr("Trash")
+                onClicked: {
+                    const paths = fileMenu.paths
+                    const forGood = fileMenu.trashView
+                    fileMenu.close()
+                    forGood ? fileMenu.deleteRequested(paths) : fileOps.trash(paths)
+                }
+            }
+        }
+        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Qt.alpha(theme.foreground, 0.12) }
+    }
     FolioMenuItem {
         shown: fileMenu.forItem && fileMenu.trashView
         text: fileMenu.forSelection ? qsTr("Restore %Ln Items", "", fileMenu.paths.length) : qsTr("Restore")
@@ -104,6 +179,12 @@ FolioMenu {
         keys: "Space"
         onTriggered: backend.togglePreview(fileMenu.target.path)
     }
+    // Touch mode has no Ctrl+I.
+    FolioMenuItem {
+        shown: touch.enabled && fileMenu.forItem && fileMenu.forFiles
+        text: qsTr("Details")
+        onTriggered: fileMenu.detailsRequested()
+    }
     FolioMenuItem {
         shown: fileMenu.forFolder
         text: fileMenu.forFolder && places.isPinned(fileMenu.target.path) ? qsTr("Unpin") : qsTr("Pin")
@@ -124,13 +205,13 @@ FolioMenu {
         onTriggered: fileOps.duplicate(fileMenu.target.path)
     }
     FolioMenuItem {
-        shown: fileMenu.forItem && fileMenu.forFiles
+        shown: fileMenu.forItem && fileMenu.forFiles && !fileMenu.compact
         text: qsTr("Copy")
         keys: "Ctrl+C"
         onTriggered: fileOps.copy(fileMenu.paths)
     }
     FolioMenuItem {
-        shown: !fileMenu.trashView && fileMenu.forItem && fileMenu.forFiles
+        shown: !fileMenu.trashView && fileMenu.forItem && fileMenu.forFiles && !fileMenu.compact
         text: qsTr("Cut")
         keys: "Ctrl+X"
         onTriggered: fileOps.cut(fileMenu.paths)
@@ -221,7 +302,7 @@ FolioMenu {
         keys: "Ctrl+H"
         onTriggered: backend.folder.showHidden = !backend.folder.showHidden
     }
-    MenuLine { shown: fileMenu.forItem && fileMenu.forFiles }
+    MenuLine { shown: fileMenu.forItem && fileMenu.forFiles && !fileMenu.compact }
     // Moving to the trash and deleting for good are two things: Trash
     // (Delete) moves it there, where Restore in any file manager brings it
     // back, and with Shift held it becomes Delete… (Shift+Delete), which
@@ -237,7 +318,7 @@ FolioMenu {
     }
     FolioMenuItem {
         readonly property bool forGood: fileMenu.shifted || fileMenu.trashView
-        shown: fileMenu.forItem && fileMenu.forFiles
+        shown: fileMenu.forItem && fileMenu.forFiles && !fileMenu.compact
         text: forGood ? qsTr("Delete…") : qsTr("Trash")
         keys: fileMenu.trashView ? "Delete" : forGood ? "Shift+Delete" : "Delete"
         onTriggered: forGood ? fileMenu.deleteRequested(fileMenu.paths) : fileOps.trash(fileMenu.paths)

@@ -8,6 +8,10 @@ import "Format.js" as Format
 // pictures at full size, video and audio playing, PDFs to scroll through,
 // text to read. Arrows step through the folder, Enter opens the file in its
 // app, Space or Escape closes.
+//
+// In touch mode a swipe left or right steps through the folder, a pinch
+// zooms a picture, a swipe down closes, and on a tablet held upright or a
+// phone the window takes the whole screen.
 ApplicationWindow {
     id: win
     width: 1100
@@ -31,6 +35,7 @@ ApplicationWindow {
     LayoutMirroring.childrenInherit: true
 
     property bool helpVisible: false
+    Component.onCompleted: if (touch.enabled && Screen.width < 1000) showFullScreen()
 
     readonly property bool rtl: Qt.application.layoutDirection === Qt.RightToLeft
     readonly property var item: previewer.item
@@ -136,6 +141,38 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
 
+                // Touch mode: ← and → as swipes, and a swipe down to close.
+                // Not while a zoomed picture is being moved about, and down
+                // only where it wouldn't be scrolling instead.
+                readonly property bool still: !(win.view && win.view.zoomed === true)
+                DragHandler {
+                    id: across
+                    target: null
+                    acceptedDevices: PointerDevice.TouchScreen
+                    enabled: touch.enabled && parent.still
+                    yAxis.enabled: false
+                    property real moved: 0
+                    onActiveTranslationChanged: if (active) moved = activeTranslation.x
+                    onActiveChanged: {
+                        if (active || Math.abs(moved) < 80)
+                            return
+                        if ((moved < 0) !== win.rtl)
+                            previewer.next()
+                        else
+                            previewer.previous()
+                    }
+                }
+                DragHandler {
+                    id: down
+                    target: null
+                    acceptedDevices: PointerDevice.TouchScreen
+                    enabled: touch.enabled && parent.still && win.viewer !== "text" && win.viewer !== "markdown" && win.viewer !== "pdf"
+                    xAxis.enabled: false
+                    property real moved: 0
+                    onActiveTranslationChanged: if (active) moved = activeTranslation.y
+                    onActiveChanged: if (!active && moved > 100) Qt.quit()
+                }
+
                 Loader {
                     id: inlineView
                     anchors.fill: parent
@@ -214,7 +251,20 @@ ApplicationWindow {
 
             function zoomBy(factor) { zoomed = true; zoom = Math.max(0.05, Math.min(16, zoom * factor)) }
             function fit() { zoomed = false; zoom = fitScale }
-            function scroll(direction) { contentY = Math.max(0, Math.min(contentHeight - height, contentY + direction * 80)) }
+            // Two fingers hold the picture by the point between them: which
+            // point of it is under `at` (in the view), as fractions of the
+            // picture, and putting that point back under wherever the
+            // fingers have got to, so a pinch zooms and moves at once.
+            function under(at) {
+                const picture = flick.source
+                return Qt.point((contentX + at.x - picture.x) / Math.max(1, picture.width),
+                                (contentY + at.y - picture.y) / Math.max(1, picture.height))
+            }
+            function put(held, at) {
+                const picture = flick.source
+                contentX = Math.max(0, Math.min(contentWidth - width, picture.x + held.x * picture.width - at.x))
+                contentY = Math.max(0, Math.min(contentHeight - height, picture.y + held.y * picture.height - at.y))
+            }
 
             contentWidth: Math.max(width, natural.width * zoom)
             contentHeight: Math.max(height, natural.height * zoom)
@@ -254,6 +304,19 @@ ApplicationWindow {
             WheelHandler {
                 acceptedModifiers: Qt.ControlModifier
                 onWheel: event => flick.zoomBy(event.angleDelta.y > 0 ? 1.1 : 1 / 1.1)
+            }
+            // Two fingers zoom, as Ctrl+= and Ctrl+- do.
+            PinchHandler {
+                id: pinch
+                target: null
+                readonly property point at: flick.mapFromItem(null, centroid.scenePosition)
+                property point held
+                onActiveChanged: if (active) held = flick.under(at)
+                onScaleChanged: (delta) => {
+                    flick.zoomBy(delta)
+                    flick.put(held, at)
+                }
+                onAtChanged: if (active) flick.put(held, at)
             }
 
             Text {

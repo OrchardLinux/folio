@@ -14,7 +14,17 @@ GridView {
     // Where the keyboard's menu (Alt+Return) opens: beside the cursor's item.
     function menuAnchor() { return currentItem }
 
-    Selecting { id: selecting; view: grid }
+    // Touch mode and its select mode, set by the pane. A finger's long
+    // press on an item takes hold of it: the pane shows its menu, and
+    // moving on from there drags it.
+    property bool touchMode: false
+    property bool picking: false
+    signal held(var item, var from, string folder)
+    signal fileTouched()
+    property bool pointing: true
+    readonly property var scroller: grid
+
+    Selecting { id: selecting; view: grid; picking: grid.picking; onFileTouched: grid.fileTouched() }
     onCurrentIndexChanged: selecting.cursorMoved()
     Keys.onPressed: (event) => {
         // With no cursor (after a click on empty space), Down starts at the
@@ -32,6 +42,7 @@ GridView {
 
     Band {
         view: grid
+        touchMode: grid.touchMode
         // Mirrored, the first column is on the right, flush with the edge
         // (the columns may not fill the width exactly).
         rectOf: (i) => {
@@ -51,6 +62,28 @@ GridView {
         onTapped: (point) => grid.contextMenu(selecting.menuAt(point), backend.path, point.scenePosition)
     }
 
+    // Touch mode: a long press on empty space is the folder's menu, and a
+    // tap there lets go of the selection, as a click does. On an item, the
+    // item's own handlers answer.
+    TapHandler {
+        id: fingerTap
+        acceptedDevices: PointerDevice.TouchScreen
+        enabled: grid.touchMode
+        // On an item where the item itself says so: a tile is only its
+        // picture and its name.
+        function onItem() {
+            const item = grid.itemAtIndex(grid.indexAt(point.position.x + grid.contentX, point.position.y + grid.contentY))
+            return !!item && item.contains(item.mapFromItem(grid, point.position))
+        }
+        onTapped: {
+            if (!onItem() && !grid.picking) {
+                backend.folder.clearSelection()
+                grid.letGo()
+            }
+        }
+        onLongPressed: if (!onItem()) grid.contextMenu(null, backend.path, point.scenePosition)
+    }
+
     clip: true
     focus: true
     keyNavigationEnabled: true
@@ -66,7 +99,19 @@ GridView {
     // Tiles grow with the zoom; the name and details under them don't. A
     // narrow pane (one side of a split) caps it at a tile its width holds.
     property real zoom: 1
-    readonly property real tileZoom: Math.max(0.5, Math.min(zoom, (width - 40) / 128))
+    // A phone's width still gets two tiles side by side.
+    property int minimumColumns: 1
+    // Touch mode: the view reaches the window's edge, where the scroll bar
+    // then is, and keeps `edge` clear of tiles beside it.
+    property int edge: 0
+    readonly property int room: width - edge
+    // The width a column had before the details took some of the room, when
+    // the window says: the columns left then keep it, and stay put.
+    property int steadyCell: 0
+    // The least room between two tiles' pictures. Touch mode packs them
+    // closer, so a tablet's width holds a column more.
+    readonly property int gap: touchMode ? 22 : 40
+    readonly property real tileZoom: Math.max(0.5, Math.min(zoom, (room / minimumColumns - gap) / 128))
     signal zoomRequested(int step)
     WheelHandler {
         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
@@ -86,8 +131,8 @@ GridView {
     }
     // The rows reflow, so bring the cursor's tile back into view.
     onTileZoomChanged: Qt.callLater(() => { if (currentIndex >= 0) { forceLayout(); positionViewAtIndex(currentIndex, GridView.Contain) } })
-    readonly property int columns: Math.max(1, Math.floor(width / (40 + 128 * tileZoom)))
-    cellWidth: Math.floor(width / columns)
+    readonly property int columns: Math.max(1, steadyCell > 0 ? Math.round(room / steadyCell) : Math.floor(room / (gap + 128 * tileZoom)))
+    cellWidth: Math.floor(room / columns)
     cellHeight: 100 + Math.round(92 * tileZoom)
     highlightFollowsCurrentItem: false
     ScrollBar.vertical: FolioScrollBar { }
@@ -97,8 +142,18 @@ GridView {
         height: grid.cellHeight
         zoom: grid.tileZoom
         current: selected
+        touchMode: grid.touchMode
+        pointing: grid.pointing
+        picking: grid.picking
         onClicked: (modifiers) => { selecting.click(index, modifiers); grid.forceActiveFocus() }
         onActivated: backend.open(path)
+        onTouched: { grid.forceActiveFocus(); selecting.touch(index) }
+        onHeld: grid.held(selecting.hold(index), this, backend.path)
+        onSweepStarted: selecting.sweepFrom(index)
+        onSwept: (at) => {
+            const p = grid.mapFromItem(null, at.x, at.y)
+            selecting.sweepTo(grid.indexAt(p.x + grid.contentX, p.y + grid.contentY))
+        }
     }
 
     Text {

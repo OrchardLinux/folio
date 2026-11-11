@@ -24,9 +24,37 @@ Item {
     required property bool selected
 
     property bool current: false
+    // Touch mode: a finger's tap and long press are told apart from the
+    // mouse's click, and select mode puts a check box on the tile.
+    property bool touchMode: false
+    property bool picking: false
+    // Whether the pointer is a mouse's just now, rather than a finger's,
+    // which has no hover to show though Qt reports one.
+    property bool pointing: true
+    readonly property bool hovering: hover.hovered && pointing
 
     signal clicked(int modifiers)
     signal activated()
+    signal touched()
+    signal held()
+    signal sweepStarted()
+    signal swept(point at)
+    // In touch mode the tile is its picture and its name, not the whole
+    // cell it's laid out in: the space between two tiles belongs to the
+    // folder, for every press, tap, hover and drag.
+    containmentMask: touchMode ? shape : null
+    QtObject {
+        id: shape
+        function contains(point: point): bool { return tile.drawn(point) }
+    }
+    function drawn(at) {
+        const pad = 8
+        if (at.x >= artBox.x - pad && at.x <= artBox.x + artBox.width + pad
+                && at.y >= artBox.y - pad && at.y <= artBox.y + artBox.height + pad)
+            return true
+        const wide = Math.max(label.contentWidth, details.contentWidth) + 2 * pad
+        return Math.abs(at.x - width / 2) <= wide / 2 && at.y >= label.y - pad && at.y <= details.y + details.height + pad
+    }
 
     // Pictures and drawings round their corners with the theme: square on
     // Omarchy's default, softly rounded on themes that round windows.
@@ -64,13 +92,34 @@ Item {
             }
 
             // A folder takes files dropped on it, lighting up while they hover.
-            DropArea {
+            FileDrop {
                 id: folderDrop
                 anchors.fill: parent
                 enabled: tile.isDir
-                keys: ["text/uri-list"]
-                onEntered: (drag) => { drag.accepted = fileOps.canDrop(drag.urls, tile.path) }
-                onDropped: (drop) => { fileOps.dropInto(drop.urls, tile.path); drop.accept(Qt.MoveAction) }
+                folder: tile.path
+                name: tile.name
+            }
+        }
+
+        // Select mode's check box, on the corner the name starts from.
+        Rectangle {
+            visible: tile.picking
+            x: -6
+            y: -6
+            width: 22
+            height: 22
+            radius: Math.min(4, theme.radius)
+            color: tile.selected ? theme.accent : theme.background
+            border.width: 1.5
+            border.color: tile.selected ? theme.accent : Qt.alpha(theme.foreground, 0.5)
+            Glyph { anchors.centerIn: parent; visible: tile.selected; name: "check"; size: 14; stroke: 2; color: theme.accentForeground }
+            // Dragged from here across other items, a finger selects them all.
+            DragHandler {
+                target: null
+                margin: 14
+                acceptedDevices: PointerDevice.TouchScreen
+                onActiveChanged: if (active) tile.sweepStarted()
+                onCentroidChanged: if (active) tile.swept(centroid.scenePosition)
             }
         }
     }
@@ -95,6 +144,7 @@ Item {
     // "28.0 KB · 11/9/26" before; just the item count for a folder, the system
     // for a machine.
     Text {
+        id: details
         anchors.top: label.bottom
         anchors.topMargin: 3
         anchors.horizontalCenter: parent.horizontalCenter
@@ -132,6 +182,9 @@ Item {
     DragHandler {
         target: null
         enabled: tile.kind !== "peer"
+        // A finger's drag scrolls the folder; it picks an item up by
+        // holding it first, which the window follows from there.
+        acceptedDevices: tile.touchMode ? PointerDevice.AllDevices & ~PointerDevice.TouchScreen : PointerDevice.AllDevices
         // Dragging a selected item takes the whole selection along. The list
         // is built as the drag starts, not again on every change of selection.
         onActiveChanged: {
@@ -143,9 +196,13 @@ Item {
 
     TapHandler {
         id: tap
-        onTapped: tile.clicked(tap.point.modifiers)
-        onDoubleTapped: tile.activated()
+        function byFinger() { return tile.touchMode && !!tap.point.device && tap.point.device.type === PointerDevice.TouchScreen }
+        onTapped: byFinger() ? tile.touched() : tile.clicked(tap.point.modifiers)
+        onDoubleTapped: if (!byFinger()) tile.activated()
+        onLongPressed: if (byFinger()) tile.held()
     }
+    // A finger shows where it is by pressing, as the pointer does by hovering.
+    readonly property bool pressing: touchMode && tap.pressed
 
     // A folder's outline: a card with a tab on its top left edge, drawn as
     // one silhouette, its corners rounded by `r`.
@@ -171,7 +228,7 @@ Item {
             width: 128
             height: 92
             readonly property color fill: tile.current || folderDrop.containsDrag ? Qt.tint(theme.lighterBackground, Qt.alpha(theme.accent, 0.3))
-                : hover.hovered ? Qt.tint(theme.lighterBackground, Qt.alpha(theme.foreground, 0.06))
+                : tile.hovering || tile.pressing ? Qt.tint(theme.lighterBackground, Qt.alpha(theme.foreground, 0.06))
                 : theme.lighterBackground
             readonly property color line: tile.current || folderDrop.containsDrag ? theme.accent : "transparent"
             readonly property real lineWidth: folderDrop.containsDrag ? 2.5 : 1.5
@@ -272,7 +329,7 @@ Item {
                 return Qt.rect((w - 66) / 2, 0, 66, h)
             }
             Rectangle {
-                visible: tile.current || hover.hovered
+                visible: tile.current || tile.hovering || tile.pressing
                 x: parent.shown.x - 3
                 y: parent.shown.y - 3
                 width: parent.shown.width + 6
@@ -298,7 +355,7 @@ Item {
                 color: tile.current ? theme.accent : theme.foreground
             }
             Rectangle {
-                visible: tile.current || hover.hovered
+                visible: tile.current || tile.hovering
                 anchors.fill: computer
                 anchors.margins: -3
                 color: "transparent"

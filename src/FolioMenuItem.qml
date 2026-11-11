@@ -16,11 +16,13 @@ MenuItem {
 
     // Hover is off by default here; with it, the pointer highlights an
     // entry and opens a submenu on its own, as menus elsewhere do.
-    hoverEnabled: true
+    // Not a finger's, which would leave the entry it tapped highlighted
+    // the next time the menu opens; its press shows instead.
+    hoverEnabled: !touch.enabled || touch.pointing
     visible: shown
     height: shown ? implicitHeight : 0
     activeFocusOnTab: shown
-    implicitHeight: 32
+    implicitHeight: touch.enabled ? 44 : 32
     leftPadding: 14
     rightPadding: 14
 
@@ -29,7 +31,7 @@ MenuItem {
         x: 4
         width: parent.width - 8
         radius: Math.min(4, theme.radius)
-        color: entry.highlighted && entry.enabled ? Qt.alpha(theme.accent, 0.18) : "transparent"
+        color: (entry.highlighted || (touch.enabled && entry.down)) && entry.enabled ? Qt.alpha(theme.accent, 0.18) : "transparent"
     }
 
     contentItem: Item {

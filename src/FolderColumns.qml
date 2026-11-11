@@ -10,13 +10,27 @@ Item {
     id: view
 
     property alias currentIndex: here.currentIndex
-    readonly property int columnWidth: 260
+    // In touch mode the columns divide the width between them, so the one
+    // furthest left starts at the edge rather than partway in.
+    readonly property int columnWidth: touchMode ? Math.floor(width / Math.max(2, Math.round(width / 261))) - 1 : 260
 
     function select(row, keep) { selecting.select(row, keep) }
     signal cursorLetGo()
     function letGo() { selecting.letGo(); cursorLetGo() }
 
-    Selecting { id: selecting; view: here }
+    // Touch mode and its select mode, set by the pane. A finger's long
+    // press on an item takes hold of it: the pane shows its menu, and
+    // moving on from there drags it.
+    property bool touchMode: false
+    property bool picking: false
+    signal held(var item, var from, string folder)
+    signal fileTouched()
+    property bool pointing: true
+    readonly property var scroller: here
+    // Off while a finger holds an item, so moving it doesn't scroll.
+    property bool interactive: true
+
+    Selecting { id: selecting; view: here; picking: view.picking; onFileTouched: view.fileTouched() }
     function focusView() { here.forceActiveFocus() }
     function menuAnchor() { return here.currentItem }
 
@@ -61,7 +75,13 @@ Item {
     Flickable {
         id: flick
         anchors.fill: parent
+        // Touch mode: what's left of a width that doesn't divide evenly
+        // stays empty at the start, rather than show a sliver of the
+        // column before.
+        anchors.leftMargin: view.touchMode && !view.LayoutMirroring.enabled ? view.width % (view.columnWidth + 1) : 0
+        anchors.rightMargin: view.touchMode && view.LayoutMirroring.enabled ? view.width % (view.columnWidth + 1) : 0
         clip: true
+        interactive: view.interactive
         acceptedButtons: Qt.NoButton
         contentWidth: Math.max(width, row.width)
         contentHeight: height
@@ -124,8 +144,12 @@ Item {
                             width: column.width
                             chevron: true
                             trail: name === ancestor.next
+                            touchMode: view.touchMode
+                            pointing: view.pointing
                             onClicked: isDir ? backend.navigate(path) : backend.showItem(path)
                             onActivated: backend.open(path)
+                            onTouched: isDir ? backend.navigate(path) : backend.showItem(path)
+                            onHeld: view.held(folder.get(index), this, ancestor.path)
                         }
                     }
                     Separator { }
@@ -138,6 +162,7 @@ Item {
                 width: view.columnWidth
                 height: row.height
                 clip: true
+                interactive: view.interactive
                 focus: true
                 keyNavigationEnabled: true
                 // No cursor of its own to start with: the pane puts it back
@@ -157,6 +182,28 @@ Item {
                     onTapped: (point) => view.contextMenu(selecting.menuAt(point), backend.path, point.scenePosition)
                 }
 
+                // Touch mode: a long press on empty space is the folder's menu, and a
+                // tap there lets go of the selection, as a click does. On an item, the
+                // item's own handlers answer.
+                TapHandler {
+                    id: fingerTap
+                    acceptedDevices: PointerDevice.TouchScreen
+                    enabled: view.touchMode
+        // On an item where the item itself says so: a tile is only its
+                    // picture and its name.
+                    function onItem() {
+                        const item = here.itemAtIndex(here.indexAt(point.position.x + here.contentX, point.position.y + here.contentY))
+                        return !!item && item.contains(item.mapFromItem(here, point.position))
+                    }
+                    onTapped: {
+                        if (!onItem() && !view.picking) {
+                            backend.folder.clearSelection()
+                            view.letGo()
+                        }
+                    }
+                    onLongPressed: if (!onItem()) view.contextMenu(null, backend.path, point.scenePosition)
+                }
+
                 onCurrentIndexChanged: selecting.cursorMoved()
                 Keys.onPressed: (event) => selecting.extendBy(event, event.key === Qt.Key_Up ? -1 : event.key === Qt.Key_Down ? 1 : 0)
                 // Into a folder is the way the columns grow: leftward, when
@@ -168,8 +215,18 @@ Item {
                     width: here.width
                     chevron: true
                     current: selected
+                    touchMode: view.touchMode
+                    pointing: view.pointing
+                    picking: view.picking
                     onClicked: (modifiers) => { selecting.click(index, modifiers); here.forceActiveFocus() }
                     onActivated: backend.open(path)
+                    onTouched: { here.forceActiveFocus(); selecting.touch(index) }
+                    onHeld: view.held(selecting.hold(index), this, backend.path)
+                    onSweepStarted: selecting.sweepFrom(index)
+                    onSwept: (at) => {
+                        const p = here.mapFromItem(null, at.x, at.y)
+                        selecting.sweepTo(here.indexAt(p.x + here.contentX, p.y + here.contentY))
+                    }
                 }
 
                 // Where the first item would be, lined up with the names.
@@ -215,8 +272,12 @@ Item {
                 delegate: FileRow {
                     width: inside.width
                     chevron: true
+                    touchMode: view.touchMode
+                    pointing: view.pointing
                     onClicked: backend.showItem(path)
                     onActivated: backend.open(path)
+                    onTouched: backend.showItem(path)
+                    onHeld: view.held(inside.model.get(index), this, view.selected.path)
                 }
 
                 Text {
@@ -227,6 +288,9 @@ Item {
                     color: theme.secondaryForeground
                 }
             }
+            // Touch mode: every column as wide as the next with its line, so
+            // the columns before end exactly at the edge.
+            Separator { visible: view.touchMode && inside.visible }
         }
     }
 }

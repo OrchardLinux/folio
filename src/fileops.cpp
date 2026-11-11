@@ -255,6 +255,42 @@ QStringList FileOps::transfer(const QStringList &paths, const QString &folder, M
     return made;
 }
 
+QVariantMap FileOps::clipboard() const {
+    bool cut = false;
+    const auto *clipboard = QGuiApplication::clipboard();
+    const QStringList paths = clipboard ? pathsFrom(clipboard->mimeData(), &cut) : QStringList();
+    QString from;
+    for (const QString &path : paths) {
+        const QString folder = QFileInfo(path).absolutePath();
+        if (from.isEmpty() || from == folder) {
+            from = folder;
+        } else {
+            from.clear();
+            break;
+        }
+    }
+    return {{"count", int(paths.size())}, {"cut", cut}, {"from", from}};
+}
+
+void FileOps::clearClipboard() {
+    if (canPaste())
+        QGuiApplication::clipboard()->clear();
+}
+
+QList<QUrl> FileOps::urls(const QStringList &paths) const {
+    QList<QUrl> urls;
+    for (const QString &path : paths)
+        urls << QUrl::fromLocalFile(path);
+    return urls;
+}
+
+bool FileOps::dropMoves(const QList<QUrl> &urls, const QString &folder) const {
+    for (const QString &path : localPaths(urls))
+        if (!sameDrive(path, folder))
+            return false;
+    return true;
+}
+
 void FileOps::paste(const QString &folder) {
     bool cut = false;
     const QStringList paths = pathsFrom(QGuiApplication::clipboard()->mimeData(), &cut);

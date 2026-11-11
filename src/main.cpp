@@ -19,6 +19,7 @@
 #include "shapes.h"
 #include "theme.h"
 #include "thumbnails.h"
+#include "touch.h"
 #include "translator.h"
 #include "windows.h"
 
@@ -94,6 +95,7 @@ static int preview(QGuiApplication &app) {
     Translator translator;
     app.installTranslator(&translator);
     Theme theme;
+    Touch touch;
     Thumbnails thumbnails;
     Previewer previewer;
     previewer.start(path, showHidden, sort);
@@ -107,6 +109,7 @@ static int preview(QGuiApplication &app) {
     engine.addImageProvider("shape", new ShapeProvider);
     engine.rootContext()->setContextProperty("translator", &translator);
     engine.rootContext()->setContextProperty("theme", &theme);
+    engine.rootContext()->setContextProperty("touch", &touch);
     engine.rootContext()->setContextProperty("previewer", &previewer);
     engine.load(QUrl("qrc:/PreviewWindow.qml"));
     if (engine.rootObjects().isEmpty())
@@ -130,6 +133,7 @@ int main(int argc, char *argv[]) {
     app.installTranslator(&translator);
 
     Theme theme;
+    Touch touch;
     Places places;
     Thumbnails thumbnails;
 
@@ -144,6 +148,7 @@ int main(int argc, char *argv[]) {
     qmlRegisterType<FolderModel>("Folio", 1, 0, "FolderModel");
     engine.rootContext()->setContextProperty("translator", &translator);
     engine.rootContext()->setContextProperty("theme", &theme);
+    engine.rootContext()->setContextProperty("touch", &touch);
     engine.rootContext()->setContextProperty("places", &places);
 
     Windows windows(&engine);

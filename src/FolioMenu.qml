@@ -7,6 +7,14 @@ import QtQuick.Controls
 Menu {
     enter: null
     exit: null
+    // Touch mode: a tap beside the menu only closes it. Without this the
+    // tap would also land on whatever is under it, as a click does.
+    modal: touch.enabled
+    dim: false
+    // That only holds for a menu drawn inside the window. As a window of
+    // its own, which is Qt's choice where the system has them, a tap beside
+    // it is the compositor's to hand on, and it hands it to what's under.
+    Component.onCompleted: if (touch.enabled) popupType = Popup.Item
     topPadding: 4
     bottomPadding: 4
     // Submenu entries (Open With, Share) are made from this.
